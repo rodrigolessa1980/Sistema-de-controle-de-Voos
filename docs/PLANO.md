@@ -599,7 +599,7 @@ daqui que a próxima sessão de trabalho começa.
 - [x] Dockerfiles da API e do frontend, nginx, compose de produção
 - [x] `.github/workflows/ci.yml`
 - [x] `.gitignore` cobrindo `.env` e todo tipo de credencial
-- [ ] CI executado de verdade no GitHub (depende do primeiro push)
+- [x] CI executado de verdade no GitHub — verde em `f21e749`
 
 ### Fase 1 · Dados
 
@@ -681,8 +681,11 @@ daqui que a próxima sessão de trabalho começa.
 - [ ] GitHub Environment `production` com required reviewer — **exige admin no
       repositório**, que a conta `JeniferBenites` não tem (`push: true`,
       `admin: false`). Só o dono do repositório consegue criar
-- [ ] Primeiro deploy executado e verificado no ar
+- [x] Primeiro deploy executado e verificado no ar — 5 healthchecks em 200 e
+      login ponta a ponta com as 52 permissões
 - [ ] Senhas rotacionadas e usuário de deploy não-root criado (§11)
+- [ ] **HTTPS.** Hoje o acesso é HTTP puro: senha e cookie de sessão trafegam em
+      claro. Aceitável para homologar, não para dado real de cliente
 
 ### Qualidade — transversal
 

@@ -122,14 +122,43 @@ falha.
 
 ---
 
-## 3. Estado do servidor
+## 3. Estado do servidor — **no ar**
+
+O deploy foi executado e verificado. Commit `f21e749`, CI e Deploy verdes.
+
+| Verificação | Resultado |
+|---|---|
+| `GET :1701/api/health` | 200 |
+| `GET :1701/api/ready` (confirma o banco) | 200 |
+| `GET :1700/health` (nginx) | 200 |
+| `GET :1700/` (SPA) | 200 |
+| `GET :1700/api/health` (proxy do nginx) | 200 |
+| `POST :1700/api/auth/login` | 200 · admin com 52 permissões |
+
+### Dois defeitos que só o CI encontrou
+
+**O `deploy.yml` não compilava.** `jobs.<id>.environment.url` não aceita o
+contexto `secrets`, e o arquivo usava `${{ secrets.SERVER_HOST }}` ali. O
+GitHub rejeita o workflow inteiro sem mensagem pela API — o run aparece com
+zero jobs e com o caminho do arquivo no lugar do nome, que foi o que denunciou.
+Trocar por `vars` compilaria e seria pior: variables não são mascaradas, e os
+logs de repositório público são públicos. O `url` saiu.
+
+**A suíte de testes dependia de existir um `.env` na máquina.** `env.ts` valida
+o ambiente na importação e chama `process.exit(1)` — certo em produção, fatal
+num teste: o Vitest morre inteiro. `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` e
+`COOKIE_SECRET` não têm padrão e o setup só forçava `DATABASE_URL`. Localmente
+passava porque o `.env` estava lá; no runner, 92 casos viravam "skipped".
+Agora o `setup.ts` define os três.
+
+### Portas
 
 | Item | Situação |
 |---|---|
-| SSH (porta 22) | **aberta** |
-| Porta 1700 (frontend) | fechada — nada publicado ainda |
-| Porta 1701 (API) | fechada — nada publicado ainda |
-| MySQL (porta 3306) | acessível, com `aircharter` e `aircharter_test` |
+| SSH (porta 22) | aberta |
+| Porta 1700 (frontend) | **no ar** |
+| Porta 1701 (API) | **no ar** |
+| MySQL (porta 3306) | acessível de fora — deveria ser fechada (§4.4) |
 
 ---
 

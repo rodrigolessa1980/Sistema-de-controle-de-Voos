@@ -19,7 +19,7 @@ honesto — o que roda, o que está bloqueado e o que descobri no caminho.
 | **4 · Financeiro** | 5 telas · cobrança · pagamento · baixa · estorno · relatórios |
 | **5 · Cliente** | 6 telas · upload de documento · disponibilidade mascarada |
 | **6 · Tempo real** | `ChangeFeed` · `GET /api/changes` · polling de 10s · sino · fila de e-mail · 6 jobs |
-| **7 · Produção** | Workflows escritos. Falta cadastrar as chaves e aprovar o environment |
+| **7 · Produção** | **No ar.** Chaves cadastradas, CI e Deploy verdes, healthchecks e login verificados. Falta HTTPS, rotação de senhas e o required reviewer |
 
 Números: 23 tabelas, 15 módulos de API, ~50 rotas, 19 telas, 52 permissões,
 **156 testes** (64 unitários + 25 de autorização + 67 de operações). Bundle do
