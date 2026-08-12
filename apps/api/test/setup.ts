@@ -40,6 +40,25 @@ process.env['JOBS_ENABLED'] = 'false';
 process.env['MAIL_DRY_RUN'] = 'true';
 process.env['BCRYPT_ROUNDS'] = '10'; // 12 deixaria a suíte lenta sem ganho real
 
+/**
+ * Segredos de teste.
+ *
+ * `apps/api/src/env.ts` valida o ambiente na importação e chama `process.exit(1)`
+ * se faltar alguma coisa — o que é certo em produção e fatal aqui: o Vitest
+ * morre inteiro, sem executar um caso sequer.
+ *
+ * Na máquina de quem desenvolve isso não aparecia, porque o `.env` do projeto
+ * estava lá e o `env.ts` o carrega sozinho. No runner do CI não existe `.env`, e
+ * a suíte inteira caía. Uma suíte que só roda onde por acaso existe um `.env`
+ * não é uma suíte — é uma coincidência.
+ *
+ * Os valores são fixos e obviamente falsos de propósito: teste não deve nem
+ * poder assinar um token que valha fora dali.
+ */
+process.env['JWT_ACCESS_SECRET'] = 'segredo-de-teste-para-access-token-nao-use-em-producao';
+process.env['JWT_REFRESH_SECRET'] = 'segredo-de-teste-para-refresh-token-nao-use-em-producao';
+process.env['COOKIE_SECRET'] = 'segredo-de-teste-para-cookie';
+
 export const prisma = new PrismaClient({
   datasources: { db: { url: TEST_DATABASE_URL } },
 });
