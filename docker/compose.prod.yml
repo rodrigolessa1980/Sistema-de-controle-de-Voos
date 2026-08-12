@@ -1,0 +1,93 @@
+# =============================================================================
+#  Compose de produção — roda no servidor, no diretório SERVER_APP_DIR.
+#
+#  O MySQL NÃO entra aqui: já existe na máquina. Este arquivo sobe apenas a API
+#  e o frontend, com as imagens que o CI publicou no GHCR.
+#
+#  Uso no servidor:
+#    docker compose -f compose.prod.yml pull
+#    docker compose -f compose.prod.yml up -d
+# =============================================================================
+
+name: aircharter
+
+services:
+  api:
+    image: ${IMAGE_API:-ghcr.io/rodrigolessa1980/sistema-de-controle-de-voos-api}:${IMAGE_TAG:-latest}
+    container_name: aircharter-api
+    restart: unless-stopped
+
+    # Todas as variáveis vêm do .env que o deploy copia com chmod 600.
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      PORT_BACKEND: 1701
+      TZ: America/Sao_Paulo
+
+    ports:
+      - '1701:1701'
+
+    volumes:
+      # Documentos de passageiro precisam sobreviver ao redeploy — são dados,
+      # não artefato de build.
+      - documents:/app/storage/documents
+
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:1701/api/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+    # Teto de memória: sem isso, um vazamento derruba o servidor inteiro em vez
+    # de derrubar só o container, que o restart recupera.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  web:
+    image: ${IMAGE_WEB:-ghcr.io/rodrigolessa1980/sistema-de-controle-de-voos-web}:${IMAGE_TAG:-latest}
+    container_name: aircharter-web
+    restart: unless-stopped
+
+    environment:
+      TZ: America/Sao_Paulo
+
+    ports:
+      - '1700:80'
+
+    # Só sobe depois que a API responde ao healthcheck: evita a janela em que o
+    # site carrega e toda chamada de API falha.
+    depends_on:
+      api:
+        condition: service_healthy
+
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  documents:
+    name: aircharter-documents

@@ -1,0 +1,127 @@
+# =============================================================================
+#  CI — roda em todo PR e em todo push.
+#
+#  Merge bloqueado se qualquer etapa falhar. As duas imagens são construídas
+#  (sem push) para que um Dockerfile quebrado apareça aqui, e não no deploy.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Push novo no mesmo branch cancela a execução anterior — economiza runner e
+  # evita fila. Em `main` não cancela, para não perder o sinal de nenhum commit.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  qualidade:
+    name: Lint, tipos e testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Os testes de integração batem em um MySQL de verdade. Um serviço
+    # efêmero no runner substitui o banco remoto: mesma engine, sem latência
+    # de rede e sem tocar em nada de produção.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci
+          MYSQL_DATABASE: aircharter_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Validar o schema do Prisma
+        # DATABASE_URL falsa: `validate` não conecta, só confere a sintaxe e as
+        # relações. O banco real não é tocado pelo CI.
+        env:
+          DATABASE_URL: mysql://ci:ci@localhost:3306/ci
+        run: npx prisma validate --schema prisma/schema.prisma
+
+      - name: Gerar o Prisma Client
+        env:
+          DATABASE_URL: mysql://ci:ci@localhost:3306/ci
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Compilar o pacote compartilhado
+        run: npm run build:shared
+
+      - name: Lint
+        # `--max-warnings 0`: warning acumulado vira ruído e ninguém mais olha.
+        run: npm run lint
+
+      - name: Formatação
+        run: npm run format:check
+
+      - name: Verificação de tipos
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Testes (unitário + integração)
+        env:
+          TEST_DATABASE_URL: mysql://root:ci@127.0.0.1:3306/aircharter_test
+          DATABASE_URL: mysql://root:ci@127.0.0.1:3306/aircharter_test
+        run: npx vitest run --reporter=verbose
+
+      - name: Build de produção
+        env:
+          DATABASE_URL: mysql://ci:ci@localhost:3306/ci
+        run: npm run build
+
+  imagens:
+    name: Build das imagens Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: qualidade
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build da imagem da API
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: false
+          tags: acm-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build da imagem do frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web.Dockerfile
+          push: false
+          tags: acm-web:ci
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

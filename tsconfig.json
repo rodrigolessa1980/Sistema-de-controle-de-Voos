@@ -1,0 +1,19 @@
+{
+  // Cobre os arquivos de ferramenta que não pertencem a nenhum app: o seed do
+  // Prisma, a config do Vitest e os scripts de operação.
+  //
+  // Sem este tsconfig, o ESLint analisava esses arquivos pelo projeto padrão —
+  // que não tem `strict` — e as regras que dependem de tipo davam falso
+  // positivo em massa (`no-unnecessary-condition` sobre `process.env`, por
+  // exemplo).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "noEmit": true,
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["prisma/**/*.ts", "vitest.config.ts", "scripts/**/*.mjs"]
+}

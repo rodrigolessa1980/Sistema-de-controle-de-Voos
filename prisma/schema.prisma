@@ -1,0 +1,848 @@
+// ============================================================================
+//  Air Charter Manager — schema Prisma
+//  Banco: MySQL 8. Host, usuário e senha vêm de DATABASE_URL (.env, fora do git).
+//
+//  Este schema é o mapa COMPLETO do protótipo `src/index.html` (React +
+//  localStorage, chave `acm-html-v4`) mais o que o protótipo não tinha e o
+//  sistema real precisa: autenticação, autorização (RBAC), upload de
+//  documentos, auditoria, sequências de código e feed de mudanças para o
+//  polling de 10s.
+//
+//  CONVENÇÕES
+//  - Campos em inglês (código TS) → colunas em snake_case via @map.
+//  - VALORES de enum permanecem em snake_case PT-BR, idênticos ao protótipo,
+//    para que os rótulos do front (objeto `L` em src/index.html) continuem
+//    válidos sem camada de tradução.
+//  - Dinheiro: Decimal(14,2). NUNCA Float (erro de arredondamento em R$).
+//  - Data pura (vencimento, vigência, data de pagamento): @db.Date.
+//  - Data+hora (embarque, retorno, bloqueios): DateTime (DATETIME(3) UTC).
+//  - Campos marcados [DENORM] são derivados e mantidos por transação +
+//    job de recálculo em lote. Existem para eliminar N+1 nas listagens.
+// ============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"] // alpine no Docker
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "foreignKeys"
+}
+
+// ============================================================================
+//  ENUMS  — todos os valores conforme o protótipo
+// ============================================================================
+
+/// src/index.html → L.kind
+enum AircraftKind {
+  aviao
+  helicoptero
+}
+
+/// src/index.html → L.acStatus
+enum AircraftStatus {
+  disponivel
+  em_voo
+  manutencao
+  indisponivel
+}
+
+/// src/index.html → L.unit
+enum TariffUnit {
+  por_hora
+  por_trecho
+  diaria
+}
+
+/// src/index.html → L.trip
+enum TripStatus {
+  confirmada
+  recusada
+  em_andamento
+  concluida
+  cancelada
+}
+
+/// src/index.html → L.req
+enum FlightRequestStatus {
+  aguardando_analise
+  em_analise
+  convertida
+  recusada
+}
+
+/// src/index.html → L.pay  (regra `chStatus`)
+enum ChargeStatus {
+  pendente
+  parcial
+  pago
+  vencido
+}
+
+/// src/index.html → L.fin  (regra `clientFin`)
+enum ClientFinancialStatus {
+  em_dia
+  pendente
+  vencido
+}
+
+/// src/index.html → L.method
+enum PaymentMethod {
+  pix
+  transferencia
+  boleto
+  cartao
+  dinheiro
+}
+
+/// src/index.html → db.blocks[].kind
+enum BlockKind {
+  manutencao
+  bloqueio
+}
+
+/// src/index.html → L.role (agora persistido como Role.key)
+enum UserStatus {
+  ativo
+  inativo
+  bloqueado
+}
+
+/// Override pontual de permissão por usuário (allow vence deny? não: deny vence)
+enum PermissionEffect {
+  allow
+  deny
+}
+
+enum ChangeAction {
+  created
+  updated
+  deleted
+}
+
+enum NotificationType {
+  solicitacao_nova
+  solicitacao_convertida
+  solicitacao_recusada
+  viagem_agendada
+  viagem_alterada
+  viagem_cancelada
+  cobranca_criada
+  cobranca_vencida
+  pagamento_recebido
+}
+
+/// Ciclo de vida de um e-mail na fila de saída (padrão outbox).
+enum OutboxStatus {
+  pendente
+  enviando
+  enviado
+  falhou
+}
+
+// ============================================================================
+//  AUTENTICAÇÃO E AUTORIZAÇÃO
+//  Substitui o seletor "Visualizar como" (RoleSwitcher) do protótipo.
+// ============================================================================
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique @db.VarChar(190)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  name         String     @db.VarChar(180)
+  status       UserStatus @default(ativo)
+
+  roleId String @map("role_id")
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  /// Preenchido somente para usuários do perfil `cliente`: amarra o login ao
+  /// cliente e é a base do escopo por linha (cliente só vê os próprios dados).
+  clientId String? @map("client_id")
+  client   Client? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  mustChangePassword Boolean   @default(false) @map("must_change_password")
+  lastLoginAt        DateTime? @map("last_login_at")
+  failedLoginCount   Int       @default(0) @map("failed_login_count")
+  lockedUntil        DateTime? @map("locked_until")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  permissionOverrides UserPermission[]
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+
+  createdTrips     Trip[]          @relation("TripCreatedBy")
+  canceledTrips    Trip[]          @relation("TripCanceledBy")
+  reviewedRequests FlightRequest[] @relation("RequestReviewedBy")
+  createdCharges   Charge[]        @relation("ChargeCreatedBy")
+  createdPayments  Payment[]       @relation("PaymentCreatedBy")
+  reversedPayments Payment[]       @relation("PaymentReversedBy")
+  createdBlocks    AircraftBlock[] @relation("BlockCreatedBy")
+  uploadedFiles    DocumentFile[]  @relation("FileUploadedBy")
+
+  @@index([roleId])
+  @@index([clientId])
+  @@index([status, deletedAt])
+  @@map("users")
+}
+
+/// operacional | financeiro | cliente | admin — extensível sem deploy.
+model Role {
+  id          String  @id @default(cuid())
+  key         String  @unique @db.VarChar(48)
+  name        String  @db.VarChar(120)
+  description String? @db.VarChar(255)
+  /// Papéis de sistema não podem ser removidos nem renomeados.
+  isSystem    Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+/// Uma permissão = `<resource>:<action>` (ex.: "trip:create", "charge:settle").
+model Permission {
+  id          String  @id @default(cuid())
+  key         String  @unique @db.VarChar(96)
+  resource    String  @db.VarChar(48)
+  action      String  @db.VarChar(48)
+  description String? @db.VarChar(255)
+
+  roles     RolePermission[]
+  overrides UserPermission[]
+
+  @@unique([resource, action])
+  @@index([resource])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+/// Exceção por usuário. `deny` sempre vence o `allow` herdado do papel.
+model UserPermission {
+  userId       String           @map("user_id")
+  permissionId String           @map("permission_id")
+  effect       PermissionEffect
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([userId, permissionId])
+  @@index([permissionId])
+  @@map("user_permissions")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 do token; o valor puro nunca é persistido.
+  tokenHash String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  ip        String?   @db.VarChar(64)
+  userAgent String?   @map("user_agent") @db.VarChar(255)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+//  CLIENTES   (protótipo: db.clients — id, name, phone, email, document, company)
+// ============================================================================
+
+model Client {
+  id       String  @id @default(cuid())
+  name     String  @db.VarChar(180)
+  company  String? @db.VarChar(180)
+  /// CPF ou CNPJ, somente dígitos (a máscara é responsabilidade do front).
+  document String? @unique @db.VarChar(20)
+  email    String  @unique @db.VarChar(190)
+  phone    String? @db.VarChar(32)
+  notes    String? @db.Text
+  active   Boolean @default(true)
+
+  // ---- [DENORM] agregados financeiros (regras `clientBalance` / `clientFin`)
+  // Mantidos na mesma transação de Charge/Payment + job de recálculo em lote.
+  // Evitam varrer cobranças por linha na tela de Clientes (N+1 do protótipo).
+  openBalance     Decimal               @default(0) @map("open_balance") @db.Decimal(14, 2)
+  overdueBalance  Decimal               @default(0) @map("overdue_balance") @db.Decimal(14, 2)
+  totalInvoiced   Decimal               @default(0) @map("total_invoiced") @db.Decimal(14, 2)
+  totalPaid       Decimal               @default(0) @map("total_paid") @db.Decimal(14, 2)
+  financialStatus ClientFinancialStatus @default(em_dia) @map("financial_status")
+  /// `clientTrips`: viagens que não estão `recusada`.
+  tripCount       Int                   @default(0) @map("trip_count")
+  aggregatesAt    DateTime?             @map("aggregates_at")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  users    User[]
+  trips    Trip[]
+  requests FlightRequest[]
+  charges  Charge[]
+
+  @@index([financialStatus])
+  @@index([name])
+  @@index([active, deletedAt])
+  @@map("clients")
+}
+
+// ============================================================================
+//  FROTA   (protótipo: db.aircraft — visível SOMENTE para operacional)
+// ============================================================================
+
+model Aircraft {
+  id           String         @id @default(cuid())
+  /// Matrícula, ex.: "PR-HLX". Sempre em maiúsculas (AircraftForm faz upper).
+  prefix       String         @unique @db.VarChar(12)
+  kind         AircraftKind
+  model        String         @db.VarChar(120)
+  manufacturer String         @db.VarChar(120)
+  capacity     Int
+  /// km/h. Base do cálculo de horas de voo. 0 = não cadastrada.
+  cruiseSpeed  Int            @default(0) @map("cruise_speed")
+  status       AircraftStatus @default(disponivel)
+  notes        String?        @db.Text
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  /// Remoção lógica: `removeAircraft` não pode apagar histórico de viagens.
+  deletedAt DateTime? @map("deleted_at")
+
+  tariffs Tariff[]
+  trips   Trip[]
+  blocks  AircraftBlock[]
+
+  @@index([status, deletedAt])
+  @@index([kind])
+  @@map("aircraft")
+}
+
+// ============================================================================
+//  TARIFAS   (protótipo: db.tariffs + COST_FIELDS)
+//  value = combustivel + horaVoo + taxas + despesaPiloto  (regra `costSum`)
+// ============================================================================
+
+model Tariff {
+  id         String   @id @default(cuid())
+  aircraftId String   @map("aircraft_id")
+  aircraft   Aircraft @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+
+  /// Total por unidade cobrada. Somatório dos 4 custos abaixo — validado na API.
+  value Decimal @db.Decimal(14, 2)
+
+  // Composição do custo (COST_FIELDS) — R$ por unidade
+  costFuel       Decimal @default(0) @map("cost_fuel") @db.Decimal(14, 2) // combustivel
+  costFlightHour Decimal @default(0) @map("cost_flight_hour") @db.Decimal(14, 2) // horaVoo
+  costFees       Decimal @default(0) @map("cost_fees") @db.Decimal(14, 2) // taxas
+  costPilot      Decimal @default(0) @map("cost_pilot") @db.Decimal(14, 2) // despesaPiloto
+
+  unit      TariffUnit @default(por_hora)
+  startDate DateTime   @map("start_date") @db.Date
+  endDate   DateTime?  @map("end_date") @db.Date
+  active    Boolean    @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  trips Trip[]
+
+  /// Índice que resolve `db.tariffs.find(t => t.aircraftId === X && t.active)`
+  /// em uma única busca indexada, para qualquer volume.
+  @@index([aircraftId, active, startDate])
+  @@index([active])
+  @@map("tariffs")
+}
+
+// ============================================================================
+//  DOCUMENTOS DOS PASSAGEIROS
+//  No protótipo `pax[].doc` é um dataURL base64 dentro do localStorage.
+//  Aqui vira arquivo em storage + metadados. DADO SENSÍVEL (LGPD).
+// ============================================================================
+
+model DocumentFile {
+  id           String  @id @default(cuid())
+  /// Caminho/chave no storage (disco do servidor ou S3-compatível).
+  storageKey   String  @unique @map("storage_key") @db.VarChar(255)
+  originalName String  @map("original_name") @db.VarChar(255)
+  mimeType     String  @map("mime_type") @db.VarChar(96)
+  sizeBytes    Int     @map("size_bytes")
+  /// SHA-256 do conteúdo: deduplica upload e comprova integridade.
+  checksum     String? @db.VarChar(64)
+  width        Int?
+  height       Int?
+
+  uploadedById String? @map("uploaded_by_id")
+  uploadedBy   User?   @relation("FileUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  /// Expurgo LGPD: data-limite de retenção do documento.
+  purgeAfter DateTime? @map("purge_after")
+  deletedAt  DateTime? @map("deleted_at")
+
+  passengers Passenger[]
+
+  @@index([checksum])
+  @@index([purgeAfter, deletedAt])
+  @@map("document_files")
+}
+
+/// Passageiro de UMA viagem OU de UMA solicitação (protótipo: `pax[]`).
+/// Exatamente um dos dois vínculos é preenchido — validado na API e por
+/// CHECK constraint adicionada na migration.
+model Passenger {
+  id   String @id @default(cuid())
+  /// Nome exatamente como está no documento (PassengersEditor).
+  name String @db.VarChar(180)
+
+  tripId String? @map("trip_id")
+  trip   Trip?   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  requestId String?        @map("request_id")
+  request   FlightRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  /// Obrigatório quando a solicitação parte do cliente (validação `paxOk`);
+  /// opcional quando o operacional cadastra a viagem direto.
+  documentFileId String?       @map("document_file_id")
+  documentFile   DocumentFile? @relation(fields: [documentFileId], references: [id], onDelete: SetNull)
+
+  /// Ordem de exibição (Passageiro 1, 2, 3...).
+  position Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([tripId])
+  @@index([requestId])
+  @@index([documentFileId])
+  @@map("passengers")
+}
+
+// ============================================================================
+//  SOLICITAÇÕES DE VOO   (protótipo: db.requests — criadas pelo CLIENTE)
+// ============================================================================
+
+model FlightRequest {
+  id   String @id @default(cuid())
+  /// "SOL-1180" — gerado por CodeSequence (atômico, sem colisão).
+  code String @unique @db.VarChar(24)
+
+  clientId String @map("client_id")
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  origin      String   @db.VarChar(160)
+  destination String   @db.VarChar(160)
+  departureAt DateTime @map("departure_at")
+  returnAt    DateTime @map("return_at")
+  /// Espelha `pax.length` no momento do envio.
+  passengers  Int
+  notes       String?  @db.Text
+
+  status FlightRequestStatus @default(aguardando_analise)
+
+  /// Preenchido quando o operacional converte a solicitação em viagem.
+  tripId String? @unique @map("trip_id")
+  trip   Trip?   @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  reviewedById    String?   @map("reviewed_by_id")
+  reviewedBy      User?     @relation("RequestReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt      DateTime? @map("reviewed_at")
+  /// Motivo da recusa (o protótipo não pedia; a operação precisa).
+  rejectionReason String?   @map("rejection_reason") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  pax Passenger[]
+
+  @@index([clientId, status])
+  @@index([status, departureAt])
+  @@index([departureAt])
+  @@map("flight_requests")
+}
+
+// ============================================================================
+//  VIAGENS   (protótipo: db.trips — o operacional agenda DIRETO = confirmada)
+// ============================================================================
+
+model Trip {
+  id   String @id @default(cuid())
+  /// "VOO-2041" — gerado por CodeSequence.
+  code String @unique @db.VarChar(24)
+
+  clientId String @map("client_id")
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  /// Nunca exposto ao perfil `cliente`.
+  aircraftId String?   @map("aircraft_id")
+  aircraft   Aircraft? @relation(fields: [aircraftId], references: [id], onDelete: SetNull)
+
+  origin      String   @db.VarChar(160)
+  destination String   @db.VarChar(160)
+  departureAt DateTime @map("departure_at")
+  returnAt    DateTime @map("return_at")
+
+  /// Distância só da IDA, em km (o cálculo dobra para ida+volta).
+  distanceKm Decimal? @map("distance_km") @db.Decimal(10, 2)
+  passengers Int      @default(1)
+  notes      String?  @db.Text
+
+  status TripStatus @default(confirmada)
+
+  // ---- Precificação (snapshot no momento do agendamento) ----
+  /// Tarifa aplicada; a viagem guarda o valor mesmo se a tarifa mudar depois.
+  tariffId String? @map("tariff_id")
+  tariff   Tariff? @relation(fields: [tariffId], references: [id], onDelete: SetNull)
+
+  /// `tariff.value` congelado. NUNCA exposto ao cliente.
+  internalTariff  Decimal? @map("internal_tariff") @db.Decimal(14, 2)
+  /// horas = 2 × distanceKm ÷ cruiseSpeed, 1 casa decimal.
+  flightHours     Decimal? @map("flight_hours") @db.Decimal(8, 2)
+  /// round(internalTariff × flightHours).
+  estimatedValue  Decimal? @map("estimated_value") @db.Decimal(14, 2)
+  /// Valor final cobrado; editável pelo operacional.
+  commercialValue Decimal? @map("commercial_value") @db.Decimal(14, 2)
+
+  // ---- Rastreabilidade ----
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("TripCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  canceledById String?   @map("canceled_by_id")
+  canceledBy   User?     @relation("TripCanceledBy", fields: [canceledById], references: [id], onDelete: SetNull)
+  canceledAt   DateTime? @map("canceled_at")
+  cancelReason String?   @map("cancel_reason") @db.VarChar(500)
+  completedAt  DateTime? @map("completed_at")
+
+  /// Registrado quando o operacional agenda apesar de pendência financeira
+  /// (o protótipo pedia confirmação e seguia; aqui fica prova de decisão).
+  scheduledWithDebt Boolean @default(false) @map("scheduled_with_debt")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  pax     Passenger[]
+  charges Charge[]
+  request FlightRequest?
+
+  /// Índice-chave do `checkConflict`: pega os compromissos de uma aeronave em
+  /// uma janela de tempo sem full scan.
+  @@index([aircraftId, departureAt, returnAt])
+  @@index([clientId, departureAt])
+  @@index([status, departureAt])
+  @@index([departureAt])
+  @@map("trips")
+}
+
+// ============================================================================
+//  BLOQUEIOS / MANUTENÇÃO   (protótipo: db.blocks)
+// ============================================================================
+
+model AircraftBlock {
+  id         String   @id @default(cuid())
+  aircraftId String   @map("aircraft_id")
+  aircraft   Aircraft @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+
+  kind    BlockKind
+  reason  String    @db.VarChar(255)
+  startAt DateTime  @map("start_at")
+  endAt   DateTime  @map("end_at")
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("BlockCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([aircraftId, startAt, endAt])
+  @@index([startAt])
+  @@map("aircraft_blocks")
+}
+
+// ============================================================================
+//  COBRANÇAS   (protótipo: db.charges — regra `chStatus`)
+// ============================================================================
+
+model Charge {
+  id   String @id @default(cuid())
+  /// "COB-3301" — gerado por CodeSequence.
+  code String @unique @db.VarChar(24)
+
+  clientId String @map("client_id")
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  /// Cobrança pode existir sem viagem (protótipo: tripId: null).
+  tripId String? @map("trip_id")
+  trip   Trip?   @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  total       Decimal  @db.Decimal(14, 2)
+  dueDate     DateTime @map("due_date") @db.Date
+  description String?  @db.VarChar(255)
+
+  // ---- [DENORM] `paid()` e `balance()` do protótipo ----
+  // Somar payments por linha era o pior N+1 do protótipo (Financeiro,
+  // Cobranças, Relatórios, Clientes). Aqui é coluna, atualizada na mesma
+  // transação do pagamento.
+  paidAmount Decimal @default(0) @map("paid_amount") @db.Decimal(14, 2)
+  balance    Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Persistido para permitir filtro/ordenação indexados. `vencido` depende do
+  /// tempo, então é reavaliado pelo job em lote `refreshOverdueCharges`.
+  status ChargeStatus @default(pendente)
+
+  settledAt DateTime? @map("settled_at")
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("ChargeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  canceledAt DateTime? @map("canceled_at")
+
+  payments Payment[]
+
+  @@index([clientId, status])
+  @@index([status, dueDate])
+  @@index([dueDate])
+  @@index([tripId])
+  @@map("charges")
+}
+
+// ============================================================================
+//  PAGAMENTOS   (protótipo: charge.payments[] — inclui a "baixa manual")
+// ============================================================================
+
+model Payment {
+  id       String @id @default(cuid())
+  chargeId String @map("charge_id")
+  charge   Charge @relation(fields: [chargeId], references: [id], onDelete: Cascade)
+
+  amount Decimal       @db.Decimal(14, 2)
+  /// Protótipo: `payment.date`.
+  paidAt DateTime      @map("paid_at") @db.Date
+  method PaymentMethod
+  note   String?       @db.VarChar(500)
+
+  /// true quando vem do botão "Dar baixa (quitar)" — quitação total em 1 clique.
+  isSettlement Boolean @default(false) @map("is_settlement")
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("PaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  // Estorno (o protótipo não tinha; financeiro real precisa).
+  reversedAt     DateTime? @map("reversed_at")
+  reversedById   String?   @map("reversed_by_id")
+  reversedBy     User?     @relation("PaymentReversedBy", fields: [reversedById], references: [id], onDelete: SetNull)
+  reversalReason String?   @map("reversal_reason") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([chargeId, reversedAt])
+  /// Suporta "Recebido no mês" e "Recebimentos por mês" com um único groupBy.
+  @@index([paidAt])
+  @@map("payments")
+}
+
+// ============================================================================
+//  CONFIGURAÇÕES   (protótipo: db.settings — registro único)
+// ============================================================================
+
+model Settings {
+  id            String @id @default("singleton")
+  companyName   String @map("company_name") @db.VarChar(180)
+  contactEmail  String @map("contact_email") @db.VarChar(190)
+  timezone      String @default("America/Sao_Paulo") @db.VarChar(64)
+  /// Intervalo mínimo entre dois voos da mesma aeronave (`checkConflict`).
+  marginMinutes Int    @default(45) @map("margin_minutes")
+
+  /// Janela do dashboard financeiro "Próx. vencimentos" (protótipo: 15 dias).
+  dueSoonDays           Int @default(15) @map("due_soon_days")
+  /// Retenção de documentos de passageiro em dias (LGPD).
+  documentRetentionDays Int @default(365) @map("document_retention_days")
+
+  // ---- Aviso de nova solicitação (requisito do Rodrigo, 12/08/2026) ----
+  /// Dispara e-mail quando o cliente envia uma solicitação de voo.
+  notifyOnNewRequest Boolean @default(true) @map("notify_on_new_request")
+  /// Destinatários EXTRA, separados por vírgula. O aviso vai sempre para todos
+  /// os usuários ativos com a permissão `request:review` + `contactEmail`;
+  /// este campo só acrescenta endereços fora do sistema.
+  notifyExtraEmails  String? @map("notify_extra_emails") @db.VarChar(500)
+
+  updatedById String?  @map("updated_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+// ============================================================================
+//  SEQUÊNCIAS DE CÓDIGO
+//  Substitui `counters = useRef({ trip: 2050, req: 1190, charge: 3310 })`.
+//  Incremento atômico em UPDATE, imune a concorrência entre instâncias.
+// ============================================================================
+
+model CodeSequence {
+  key     String @id @db.VarChar(32) // "trip" | "request" | "charge"
+  prefix  String @db.VarChar(12) // "VOO" | "SOL" | "COB"
+  current Int
+  padding Int    @default(4)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("code_sequences")
+}
+
+// ============================================================================
+//  FEED DE MUDANÇAS  → base do polling de 10 segundos
+//  Uma linha por mutação, gravada na MESMA transação. O cliente pergunta
+//  "o que mudou desde a sequência N?" e recebe só o delta — em vez de
+//  rebaixar todas as listas a cada 10s.
+// ============================================================================
+
+model ChangeFeed {
+  /// Sequência global monotônica; é o cursor do polling.
+  seq      BigInt       @id @default(autoincrement())
+  entity   String       @db.VarChar(48) // "trip" | "charge" | "client" | ...
+  entityId String       @map("entity_id") @db.VarChar(32)
+  action   ChangeAction
+
+  /// Escopo de visibilidade: quem pode ser notificado desta mudança.
+  /// null = todos os perfis internos. Preenchido = só este cliente + internos.
+  clientScopeId String? @map("client_scope_id") @db.VarChar(32)
+
+  actorId   String?  @map("actor_id") @db.VarChar(32)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, seq])
+  @@index([clientScopeId, seq])
+  @@index([createdAt])
+  @@map("change_feed")
+}
+
+// ============================================================================
+//  NOTIFICAÇÕES   (o sino do Header já existia no protótipo, sem função)
+// ============================================================================
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type  NotificationType
+  title String           @db.VarChar(180)
+  body  String?          @db.VarChar(500)
+
+  /// Destino do clique: entidade + id (ex.: "trip", "tr-1").
+  entity   String? @db.VarChar(48)
+  entityId String? @map("entity_id") @db.VarChar(32)
+
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+// ============================================================================
+//  FILA DE E-MAIL (padrão outbox)
+//
+//  Requisito: toda solicitação de voo nova precisa avisar por e-mail quem
+//  aprova, além da notificação no sistema.
+//
+//  Por que fila e não `sendMail()` direto no handler: se o e-mail for enviado
+//  dentro da transação e ela der rollback, sai aviso de uma solicitação que não
+//  existe. Se for enviado depois e o SMTP estiver fora do ar, o aviso é perdido
+//  em silêncio. A linha é gravada na MESMA transação da solicitação — então o
+//  aviso existe se e somente se a solicitação existe — e um worker entrega com
+//  retry e backoff, sem nunca bloquear a resposta ao cliente.
+// ============================================================================
+
+model EmailOutbox {
+  id String @id @default(cuid())
+
+  /// Idempotência: "request.created:<requestId>". O índice único é o que
+  /// garante que um retry do worker não gere um segundo e-mail.
+  dedupeKey String @unique @map("dedupe_key") @db.VarChar(190)
+
+  /// Destinatários separados por vírgula (resolvidos na gravação, não no envio:
+  /// o aviso vai para quem tinha permissão no momento do fato).
+  recipients String  @db.VarChar(1000)
+  subject    String  @db.VarChar(255)
+  /// Nome do template (ex.: "solicitacao-nova"), não o HTML pronto.
+  template   String  @db.VarChar(64)
+  /// Variáveis do template. Sem dado sensível: nunca documento de passageiro.
+  payload    Json
+  replyTo    String? @map("reply_to") @db.VarChar(190)
+
+  status            OutboxStatus @default(pendente)
+  attempts          Int          @default(0)
+  maxAttempts       Int          @default(5) @map("max_attempts")
+  /// Backoff exponencial. O worker busca `status=pendente AND nextAttemptAt <= now()`.
+  nextAttemptAt     DateTime     @default(now()) @map("next_attempt_at")
+  lastError         String?      @map("last_error") @db.Text
+  sentAt            DateTime?    @map("sent_at")
+  /// id da mensagem no provedor, para rastrear entrega/bounce.
+  providerMessageId String?      @map("provider_message_id") @db.VarChar(190)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Índice que o worker varre a cada ciclo — sem full scan.
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+  @@map("email_outbox")
+}
+
+// ============================================================================
+//  AUDITORIA
+// ============================================================================
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  userId String? @map("user_id")
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action   String  @db.VarChar(96) // "trip.cancel", "charge.settle", ...
+  entity   String  @db.VarChar(48)
+  entityId String? @map("entity_id") @db.VarChar(32)
+
+  before Json?
+  after  Json?
+
+  ip        String?  @db.VarChar(64)
+  userAgent String?  @map("user_agent") @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId, createdAt])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

@@ -1,0 +1,329 @@
+# =============================================================================
+#  Deploy em produção.
+#
+#  Publica as imagens no GHCR e sobe no servidor. Como NÃO há chave SSH — só
+#  senha —, o acesso usa `sshpass` com a senha vindo por variável de ambiente
+#  (`-e`), nunca na linha de comando: assim ela não aparece em `ps` nem no log.
+#
+#  O host é fixado com `ssh-keyscan` antes de conectar. Autenticação por senha
+#  sem verificar o host aceitaria um man-in-the-middle sem reclamar.
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag da imagem para publicar (padrão: sha do commit)'
+        required: false
+
+concurrency:
+  # Nunca dois deploys ao mesmo tempo, e não cancela o que já está no meio.
+  group: deploy-producao
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  NODE_VERSION: '22'
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # As mesmas verificações do CI. Deploy sem elas é deploy no escuro.
+  # ---------------------------------------------------------------------------
+  verificar:
+    name: Verificações
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci
+          MYSQL_DATABASE: aircharter_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Gerar o Prisma Client
+        env:
+          DATABASE_URL: mysql://ci:ci@localhost:3306/ci
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - run: npm run build:shared
+      - run: npm run lint
+      - run: npm run typecheck --workspaces --if-present
+      - name: Testes
+        env:
+          TEST_DATABASE_URL: mysql://root:ci@127.0.0.1:3306/aircharter_test
+          DATABASE_URL: mysql://root:ci@127.0.0.1:3306/aircharter_test
+        run: npx vitest run
+
+  # ---------------------------------------------------------------------------
+  # Build e push para o GHCR. Usa o GITHUB_TOKEN — não precisa de secret extra.
+  # ---------------------------------------------------------------------------
+  publicar:
+    name: Publicar imagens
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: verificar
+
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        name: Definir a tag da imagem
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="sha-${GITHUB_SHA::12}"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nome do repositório em minúsculas
+        id: repo
+        # O GHCR só aceita caminho em minúsculas, e o repositório tem maiúsculas.
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar a imagem da API
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-api:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Publicar a imagem do frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web.Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-web:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  # ---------------------------------------------------------------------------
+  # Deploy por SSH com senha.
+  # ---------------------------------------------------------------------------
+  publicar-no-servidor:
+    name: Publicar no servidor
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: publicar
+
+    # Environment com required reviewer: ninguém publica em produção sem
+    # aprovação, e os secrets de deploy ficam fora do alcance de PR de fork.
+    environment:
+      name: production
+      url: http://${{ secrets.SERVER_HOST }}:${{ vars.PORT_FRONTEND || '1700' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Fixar a chave do host
+        # Sem isso, `StrictHostKeyChecking=no` aceitaria qualquer servidor que
+        # respondesse no IP — inclusive um atacante no meio do caminho.
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+          echo "Chave do host registrada."
+
+      - name: Montar o .env de produção
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
+          MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
+          MYSQL_USER: ${{ secrets.MYSQL_USER }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          COOKIE_SECRET: ${{ secrets.COOKIE_SECRET }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          MAIL_API_KEY: ${{ secrets.MAIL_API_KEY }}
+          MAIL_PROVIDER: ${{ vars.MAIL_PROVIDER }}
+          MAIL_FROM: ${{ vars.MAIL_FROM }}
+          MAIL_FROM_NAME: ${{ vars.MAIL_FROM_NAME }}
+          MAIL_REPLY_TO: ${{ vars.MAIL_REPLY_TO }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          PORT_FRONTEND: ${{ vars.PORT_FRONTEND || '1700' }}
+          PORT_BACKEND: ${{ vars.PORT_BACKEND || '1701' }}
+          POLL_INTERVAL_MS: ${{ vars.POLL_INTERVAL_MS || '10000' }}
+          TZ: ${{ vars.TZ || 'America/Sao_Paulo' }}
+        run: |
+          set -euo pipefail
+
+          # Sem chave de e-mail, o worker roda em dry-run em vez de acumular
+          # falha na fila (docs/PLANO.md §13.3).
+          if [ -n "${MAIL_API_KEY:-}" ]; then MAIL_DRY_RUN=0; else MAIL_DRY_RUN=1; fi
+
+          cat > .env.prod <<ENVFILE
+          NODE_ENV=production
+          DATABASE_URL=${DATABASE_URL}
+          MYSQL_HOST=${MYSQL_HOST}
+          MYSQL_PORT=${MYSQL_PORT}
+          MYSQL_USER=${MYSQL_USER}
+          MYSQL_PASSWORD=${MYSQL_PASSWORD}
+          MYSQL_DATABASE=${MYSQL_DATABASE}
+          PORT_BACKEND=${PORT_BACKEND}
+          PORT_FRONTEND=${PORT_FRONTEND}
+          API_BASE_URL=http://${SERVER_HOST}:${PORT_BACKEND}
+          WEB_BASE_URL=http://${SERVER_HOST}:${PORT_FRONTEND}
+          CORS_ORIGINS=http://${SERVER_HOST}:${PORT_FRONTEND}
+          LOG_LEVEL=info
+          TZ=${TZ}
+          JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
+          JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+          JWT_ACCESS_TTL=15m
+          JWT_REFRESH_TTL=7d
+          COOKIE_SECRET=${COOKIE_SECRET}
+          ENCRYPTION_KEY=${ENCRYPTION_KEY}
+          BCRYPT_ROUNDS=12
+          POLL_INTERVAL_MS=${POLL_INTERVAL_MS}
+          CHANGE_FEED_PAGE_SIZE=500
+          CHANGE_FEED_RETENTION_HOURS=24
+          UPLOAD_DIR=./storage/documents
+          UPLOAD_MAX_BYTES=5242880
+          UPLOAD_ALLOWED_MIME=image/jpeg,image/png,image/webp,application/pdf
+          DOCUMENT_RETENTION_DAYS=365
+          MAIL_PROVIDER=${MAIL_PROVIDER:-console}
+          MAIL_API_KEY=${MAIL_API_KEY:-}
+          MAIL_FROM=${MAIL_FROM:-nao-responda@aircharter.com.br}
+          MAIL_FROM_NAME=${MAIL_FROM_NAME:-Air Charter Manager}
+          MAIL_REPLY_TO=${MAIL_REPLY_TO:-}
+          MAIL_DRY_RUN=${MAIL_DRY_RUN}
+          BATCH_SIZE=500
+          JOBS_ENABLED=true
+          ENVFILE
+
+          echo "Arquivo .env de produção montado ($(wc -l < .env.prod) linhas)."
+
+      - name: Enviar os arquivos e subir
+        env:
+          # `sshpass -e` lê a senha daqui. Ela nunca entra na linha de comando,
+          # então não aparece em `ps` nem no log do runner.
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          HOST: ${{ secrets.SERVER_HOST }}
+          USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ vars.SERVER_APP_DIR || '/opt/aircharter' }}
+          IMAGE_TAG: ${{ needs.publicar.outputs.tag }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+
+          sshpass -e ssh -o BatchMode=no "$USER@$HOST" "mkdir -p '$APP_DIR'"
+          sshpass -e scp docker/compose.prod.yml .env.prod "$USER@$HOST:$APP_DIR/"
+
+          sshpass -e ssh "$USER@$HOST" \
+            APP_DIR="$APP_DIR" \
+            IMAGE_TAG="$IMAGE_TAG" \
+            REPO_LC="$REPO_LC" \
+            GHCR_USER="$GHCR_USER" \
+            GHCR_TOKEN="$GHCR_TOKEN" \
+            'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+
+          # 600: só o dono lê o arquivo com as credenciais.
+          mv -f .env.prod .env
+          chmod 600 .env
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          export IMAGE_TAG
+          export IMAGE_API="ghcr.io/${REPO_LC}-api"
+          export IMAGE_WEB="ghcr.io/${REPO_LC}-web"
+
+          docker compose -f compose.prod.yml pull
+          # As migrations rodam no entrypoint da API, antes do servidor subir.
+          docker compose -f compose.prod.yml up -d --remove-orphans
+
+          docker logout ghcr.io
+          docker image prune -f --filter "until=168h"
+          echo "Containers no ar:"
+          docker compose -f compose.prod.yml ps
+          REMOTE
+
+      - name: Verificar a saúde após o deploy
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+          PORT_BACKEND: ${{ vars.PORT_BACKEND || '1701' }}
+          PORT_FRONTEND: ${{ vars.PORT_FRONTEND || '1700' }}
+        run: |
+          set -euo pipefail
+
+          echo "Aguardando a API responder..."
+          for i in $(seq 1 30); do
+            if curl -fsS -m 5 "http://$HOST:$PORT_BACKEND/api/health" > /dev/null; then
+              echo "API no ar (${i}0s)."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::A API não respondeu em 5 minutos."
+              exit 1
+            fi
+            sleep 10
+          done
+
+          # `/ready` confirma que o banco também responde — `/health` só diz que
+          # o processo está vivo.
+          curl -fsS -m 10 "http://$HOST:$PORT_BACKEND/api/ready" \
+            || { echo "::error::A API está no ar mas não alcança o banco."; exit 1; }
+
+          curl -fsS -m 10 "http://$HOST:$PORT_FRONTEND/health" > /dev/null \
+            || { echo "::error::O frontend não respondeu."; exit 1; }
+
+          echo "Deploy verificado: API e frontend respondendo."
+
+      - name: Limpar o .env do runner
+        # `always()`: o arquivo some mesmo se um passo anterior falhou.
+        if: always()
+        run: rm -f .env.prod

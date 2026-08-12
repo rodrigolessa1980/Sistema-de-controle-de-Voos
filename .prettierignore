@@ -1,0 +1,9 @@
+dist/
+build/
+node_modules/
+coverage/
+package-lock.json
+prisma/migrations/
+src/index.html
+air-charter-manager*.html
+*.md

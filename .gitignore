@@ -1,0 +1,136 @@
+# ============================================================
+# Segredos e ambiente  — NUNCA comitar
+# ============================================================
+.env
+.env.*
+!.env.example
+*.env
+env.local
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+id_rsa*
+id_ed25519*
+known_hosts
+.npmrc
+.netrc
+
+# ============================================================
+# Dependências
+# ============================================================
+node_modules/
+.pnpm-store/
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+jspm_packages/
+
+# ============================================================
+# Build / artefatos gerados
+# ============================================================
+dist/
+build/output/
+out/
+.next/
+.nuxt/
+.output/
+.vite/
+.turbo/
+.cache/
+*.tsbuildinfo
+apps/web/dist/
+apps/api/dist/
+
+# ============================================================
+# Prisma
+# ============================================================
+prisma/*.db
+prisma/*.db-journal
+prisma/migrations/dev.db*
+generated/
+.prisma/
+
+# ============================================================
+# Testes / cobertura
+# ============================================================
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+*.lcov
+
+# ============================================================
+# Logs
+# ============================================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log
+
+# ============================================================
+# Uploads locais (documentos de passageiros — dado sensível/LGPD)
+# ============================================================
+uploads/
+storage/
+tmp/
+temp/
+*.upload
+
+# ============================================================
+# Docker (overrides locais)
+# ============================================================
+.deploy-rehearsal/
+docker-compose.override.yml
+docker-compose.*.local.yml
+.docker/
+*.tar
+
+# ============================================================
+# Editores / IDE
+# ============================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.code-workspace
+
+# ============================================================
+# Sistema operacional
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ============================================================
+# Ferramentas locais
+# ============================================================
+.eslintcache
+.stylelintcache
+.prettiercache
+*.pid
+*.seed
+*.pid.lock
+.claude/settings.local.json
