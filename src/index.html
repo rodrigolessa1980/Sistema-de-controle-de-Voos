@@ -1,0 +1,2159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Air Charter Manager</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        colors: {
+          bg: '#F7F9FC',
+          ink: '#26303D',
+          sub: '#6B7688',
+          line: '#DDE3EC',
+          soft: '#EEF2F7',
+          primary: { DEFAULT: '#446A8D', dark: '#2E4C68', soft: '#E7EDF3' },
+          success: { DEFAULT: '#3E9070', soft: '#E4F1EB' },
+          warning: { DEFAULT: '#D9971B', soft: '#FBF0DC' },
+          danger: { DEFAULT: '#D64545', soft: '#FBE6E6' },
+        },
+        boxShadow: {
+          card: '0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.06)',
+          pop: '0 8px 24px -6px rgb(16 24 40 / 0.12), 0 2px 6px -2px rgb(16 24 40 / 0.06)',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { background: #F7F9FC; }
+  * { -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .fade-in { animation: fade .18s ease-out; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px);} to {opacity:1; transform:none;} }
+  select { -webkit-appearance: none; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236B7688' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right .6rem center; padding-right: 2rem; }
+  [data-help]{ position: relative; cursor: help; }
+</style>
+</head>
+<body class="font-sans text-ink">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, createContext, useContext } = React;
+
+/* ============================================================
+   ÍCONES (Lucide)
+============================================================ */
+function Icon({ name, size = 18, className = '', strokeWidth = 2 }) {
+  const lib = (window.lucide && window.lucide.icons) || {};
+  const node = lib[name] || lib.Circle;
+  const children = Array.isArray(node) ? node : [];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round"
+      strokeLinejoin="round" className={className} aria-hidden="true">
+      {children.map((c, i) => React.createElement(c[0], { key: i, ...c[1] }))}
+    </svg>
+  );
+}
+
+/* ============================================================
+   HELPERS
+============================================================ */
+const TODAY = new Date('2026-08-11T12:00:00');
+const uid = (p = '') => p + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
+
+const money = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
+const moneyShort = (v) => Math.abs(v) >= 1000
+  ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 }).format(v || 0)
+  : money(v);
+const fdate = (iso) => iso ? new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(iso)) : '—';
+const fdatetime = (iso) => iso ? new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)) : '—';
+const initials = (n) => n.split(' ').filter(Boolean).slice(0, 2).map(x => x[0]).join('').toUpperCase();
+const combine = (d, t) => d ? `${d}T${t || '00:00'}:00` : '';
+const overlap = (ns, ne, es, ee) => {
+  const a = new Date(ns).getTime(), b = new Date(ne).getTime(), c = new Date(es).getTime(), d = new Date(ee).getTime();
+  if ([a, b, c, d].some(x => isNaN(x))) return false;
+  return a < d && b > c;
+};
+const sameDay = (iso, ref) => { const x = new Date(iso); return x.getFullYear() === ref.getFullYear() && x.getMonth() === ref.getMonth() && x.getDate() === ref.getDate(); };
+const isFuture = (iso, ref = TODAY) => new Date(iso).getTime() >= ref.getTime();
+const addMonths = (date, n) => { const d = new Date(date); d.setMonth(d.getMonth() + n); return d; };
+const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() + n); return d; };
+const toISODate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/* ============================================================
+   LABELS
+============================================================ */
+const L = {
+  kind: { aviao: 'Avião', helicoptero: 'Helicóptero' },
+  acStatus: { disponivel: 'Disponível', em_voo: 'Em voo', manutencao: 'Manutenção', indisponivel: 'Indisponível' },
+  trip: { confirmada: 'Confirmada', recusada: 'Recusada', em_andamento: 'Em andamento', concluida: 'Concluída', cancelada: 'Cancelada' },
+  req: { aguardando_analise: 'Aguardando análise', em_analise: 'Em análise', convertida: 'Convertida em viagem', recusada: 'Recusada' },
+  pay: { pendente: 'Pendente', parcial: 'Parcial', pago: 'Pago', vencido: 'Vencido' },
+  fin: { em_dia: 'Em dia', pendente: 'Pendente', vencido: 'Vencido' },
+  method: { pix: 'PIX', transferencia: 'Transferência', boleto: 'Boleto', cartao: 'Cartão', dinheiro: 'Dinheiro' },
+  unit: { por_hora: 'Por hora', por_trecho: 'Por trecho', diaria: 'Diária' },
+  role: { operacional: 'Operacional', financeiro: 'Financeiro', cliente: 'Cliente' },
+};
+
+/* ============================================================
+   DADOS MOCKADOS
+============================================================ */
+const CURRENT_CLIENT_ID = 'cl-3';
+// Documento de exemplo (placeholder) — usado só nos dados mockados.
+const DEMO_DOC = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="12" fill="#E7EDF3"/><rect x="16" y="16" width="80" height="104" rx="8" fill="#B8C6D6"/><circle cx="56" cy="52" r="20" fill="#9DB0C4"/><rect x="30" y="80" width="52" height="30" rx="6" fill="#9DB0C4"/><rect x="112" y="24" width="184" height="14" rx="7" fill="#9DB0C4"/><rect x="112" y="52" width="150" height="10" rx="5" fill="#B8C6D6"/><rect x="112" y="72" width="170" height="10" rx="5" fill="#B8C6D6"/><rect x="112" y="92" width="120" height="10" rx="5" fill="#B8C6D6"/><text x="16" y="150" font-family="sans-serif" font-size="13" fill="#4A5A6B">DOCUMENTO DE IDENTIFICAÇÃO</text><text x="16" y="172" font-family="sans-serif" font-size="11" fill="#7C8A9A">Exemplo (protótipo)</text></svg>');
+function seed() {
+  return {
+    role: 'operacional',
+    currentClientId: CURRENT_CLIENT_ID,
+    settings: { companyName: 'Air Charter Manager', contactEmail: 'operacoes@aircharter.com.br', timezone: 'America/Sao_Paulo', marginMinutes: 45 },
+    aircraft: [
+      { id: 'ac-1', prefix: 'PR-HLX', kind: 'helicoptero', model: 'AW109 GrandNew', manufacturer: 'Leonardo', capacity: 6, cruiseSpeed: 285, status: 'disponivel' },
+      { id: 'ac-2', prefix: 'PT-ABC', kind: 'aviao', model: 'Phenom 300E', manufacturer: 'Embraer', capacity: 9, cruiseSpeed: 860, status: 'em_voo' },
+      { id: 'ac-3', prefix: 'PR-JET', kind: 'aviao', model: 'Citation CJ4', manufacturer: 'Cessna', capacity: 8, cruiseSpeed: 835, status: 'manutencao' },
+      { id: 'ac-4', prefix: 'PP-SKY', kind: 'helicoptero', model: 'H145', manufacturer: 'Airbus', capacity: 8, cruiseSpeed: 250, status: 'disponivel' },
+    ],
+    clients: [
+      { id: 'cl-1', name: 'Ricardo Menezes', phone: '(11) 98812-4455', email: 'ricardo@grupomz.com.br', document: '182.443.900-11', company: 'Grupo MZ' },
+      { id: 'cl-2', name: 'Beatriz Almeida', phone: '(21) 99745-8820', email: 'beatriz@almeidaadv.com.br', document: '305.118.220-45', company: 'Almeida Advocacia' },
+      { id: 'cl-3', name: 'Fernando Tavares', phone: '(31) 98120-3344', email: 'fernando@tavares.com', document: '411.552.770-09', company: 'Agropecuária Tavares' },
+      { id: 'cl-4', name: 'Juliana Prado', phone: '(11) 99630-1122', email: 'juliana@pradoholding.com', document: '228.664.310-77', company: 'Prado Holding' },
+      { id: 'cl-5', name: 'Marcos Villela', phone: '(41) 98800-5566', email: 'marcos@villelaenergia.com.br', document: '509.221.884-30', company: 'Villela Energia' },
+      { id: 'cl-6', name: 'Camila Rezende', phone: '(51) 99123-7788', email: 'camila@rezendecorp.com', document: '670.334.129-02', company: 'Rezende Corp' },
+      { id: 'cl-7', name: 'André Nogueira', phone: '(19) 98456-9911', email: 'andre@nglogistica.com.br', document: '744.910.556-88', company: 'NG Logística' },
+      { id: 'cl-8', name: 'Patrícia Lima', phone: '(85) 99887-3300', email: 'patricia@limaincorp.com', document: '155.208.443-19', company: 'Lima Incorporadora' },
+      { id: 'cl-9', name: 'Gustavo Peixoto', phone: '(11) 98090-4477', email: 'gustavo@peixotoinvest.com', document: '398.771.002-64', company: 'Peixoto Invest' },
+      { id: 'cl-10', name: 'Larissa Fontes', phone: '(62) 99341-6655', email: 'larissa@fontesagro.com.br', document: '820.446.117-53', company: 'Fontes Agro' },
+    ],
+    tariffs: [
+      { id: 'tf-1', aircraftId: 'ac-1', value: 8500, costs: { combustivel: 3500, horaVoo: 3000, taxas: 1000, despesaPiloto: 1000 }, unit: 'por_hora', startDate: '2026-01-01', endDate: '2026-12-31', active: true },
+      { id: 'tf-2', aircraftId: 'ac-2', value: 12000, costs: { combustivel: 5000, horaVoo: 4000, taxas: 1500, despesaPiloto: 1500 }, unit: 'por_hora', startDate: '2026-01-01', endDate: '2026-12-31', active: true },
+      { id: 'tf-3', aircraftId: 'ac-3', value: 11000, costs: { combustivel: 4500, horaVoo: 3800, taxas: 1400, despesaPiloto: 1300 }, unit: 'por_hora', startDate: '2026-01-01', endDate: '2026-12-31', active: true },
+      { id: 'tf-4', aircraftId: 'ac-4', value: 9800, costs: { combustivel: 4000, horaVoo: 3300, taxas: 1300, despesaPiloto: 1200 }, unit: 'por_hora', startDate: '2026-01-01', active: true },
+    ],
+    trips: [
+      { id: 'tr-1', code: 'VOO-2041', clientId: 'cl-1', aircraftId: 'ac-2', origin: 'São Paulo (CGH)', destination: 'Rio de Janeiro (SDU)', departureAt: '2026-08-11T08:00:00', returnAt: '2026-08-11T18:00:00', passengers: 4, notes: 'Cliente prefere embarque antecipado.', status: 'confirmada', distanceKm: 360, internalTariff: 12000, estimatedValue: 120000, commercialValue: 132000 },
+      { id: 'tr-2', code: 'VOO-2042', clientId: 'cl-4', aircraftId: 'ac-2', origin: 'São Paulo (CGH)', destination: 'Belo Horizonte (PLU)', departureAt: '2026-08-11T14:00:00', returnAt: '2026-08-11T21:00:00', passengers: 3, notes: 'Conflito proposital para teste.', status: 'confirmada', distanceKm: 490, internalTariff: 12000, estimatedValue: 84000, commercialValue: 90000 },
+      { id: 'tr-3', code: 'VOO-2043', clientId: 'cl-6', aircraftId: 'ac-1', origin: 'São Paulo (Faria Lima)', destination: 'Campos do Jordão', departureAt: '2026-08-11T09:30:00', returnAt: '2026-08-11T16:00:00', passengers: 5, status: 'confirmada', distanceKm: 165, internalTariff: 8500, estimatedValue: 55250, commercialValue: 58000 },
+      { id: 'tr-4', code: 'VOO-2044', clientId: 'cl-3', aircraftId: 'ac-4', origin: 'Belo Horizonte (PLU)', destination: 'Vitória (VIX)', departureAt: '2026-08-15T07:00:00', returnAt: '2026-08-16T19:00:00', passengers: 4, notes: 'Agendada a partir da solicitação SOL-1179.', status: 'confirmada', distanceKm: 380, internalTariff: 9800, estimatedValue: 78400, commercialValue: 82000 },
+      { id: 'tr-5', code: 'VOO-2045', clientId: 'cl-2', aircraftId: 'ac-1', origin: 'Rio de Janeiro (SDU)', destination: 'Búzios', departureAt: '2026-08-18T10:00:00', returnAt: '2026-08-18T20:00:00', passengers: 6, status: 'confirmada', distanceKm: 150, internalTariff: 8500, estimatedValue: 85000, commercialValue: 89000 },
+      { id: 'tr-6', code: 'VOO-2039', clientId: 'cl-8', aircraftId: 'ac-2', origin: 'São Paulo (GRU)', destination: 'Brasília (BSB)', departureAt: '2026-07-28T06:00:00', returnAt: '2026-07-28T22:00:00', passengers: 7, status: 'concluida', distanceKm: 870, internalTariff: 12000, estimatedValue: 192000, commercialValue: 198000 },
+      { id: 'tr-7', code: 'VOO-2040', clientId: 'cl-9', aircraftId: 'ac-4', origin: 'Curitiba (BFH)', destination: 'Florianópolis (FLN)', departureAt: '2026-08-05T13:00:00', returnAt: '2026-08-05T21:00:00', passengers: 5, status: 'concluida', distanceKm: 250, internalTariff: 9800, estimatedValue: 78400, commercialValue: 80000 },
+      { id: 'tr-8', code: 'VOO-2046', clientId: 'cl-7', aircraftId: 'ac-1', origin: 'Goiânia (GYN)', destination: 'São Paulo (CGH)', departureAt: '2026-08-22T15:00:00', returnAt: '2026-08-23T18:00:00', passengers: 4, status: 'recusada', distanceKm: 810, internalTariff: 8500, estimatedValue: 93500, commercialValue: 96000 },
+    ],
+    requests: [
+      { id: 'rq-1', code: 'SOL-1180', clientId: 'cl-5', origin: 'São Paulo (CGH)', destination: 'Angra dos Reis', departureAt: '2026-08-20T08:00:00', returnAt: '2026-08-21T17:00:00', passengers: 4, notes: 'Reunião de negócios.', status: 'aguardando_analise', pax: [
+        { id: 'px-1', name: 'Marcos Villela', doc: DEMO_DOC }, { id: 'px-2', name: 'Helena Villela', doc: DEMO_DOC }, { id: 'px-3', name: 'Rafael Costa', doc: DEMO_DOC }, { id: 'px-4', name: 'Sônia Braga', doc: DEMO_DOC } ] },
+      { id: 'rq-2', code: 'SOL-1181', clientId: 'cl-10', origin: 'Goiânia (GYN)', destination: 'Caldas Novas', departureAt: '2026-08-19T07:30:00', returnAt: '2026-08-19T19:00:00', passengers: 6, status: 'aguardando_analise' },
+      { id: 'rq-3', code: 'SOL-1179', clientId: 'cl-3', origin: 'Belo Horizonte (PLU)', destination: 'Vitória (VIX)', departureAt: '2026-08-15T07:00:00', returnAt: '2026-08-16T19:00:00', passengers: 4, status: 'convertida' },
+      { id: 'rq-4', code: 'SOL-1182', clientId: 'cl-6', origin: 'São Paulo (Faria Lima)', destination: 'Ilhabela', departureAt: '2026-08-24T09:00:00', returnAt: '2026-08-24T18:00:00', passengers: 5, status: 'em_analise' },
+      { id: 'rq-5', code: 'SOL-1183', clientId: 'cl-2', origin: 'Rio de Janeiro (SDU)', destination: 'Petrópolis', departureAt: '2026-08-27T10:00:00', returnAt: '2026-08-27T16:00:00', passengers: 3, notes: 'Voo panorâmico + almoço.', status: 'aguardando_analise', pax: [
+        { id: 'px-5', name: 'Beatriz Almeida', doc: DEMO_DOC }, { id: 'px-6', name: 'Carlos Almeida', doc: DEMO_DOC }, { id: 'px-7', name: 'Diego Martins', doc: '' } ] },
+    ],
+    charges: [
+      { id: 'ch-1', code: 'COB-3301', clientId: 'cl-1', tripId: 'tr-1', total: 132000, dueDate: '2026-07-30', payments: [{ id: 'p1', amount: 40000, date: '2026-07-15', method: 'pix' }] },
+      { id: 'ch-2', code: 'COB-3302', clientId: 'cl-3', tripId: 'tr-4', total: 82000, dueDate: '2026-08-20', payments: [{ id: 'p2', amount: 30000, date: '2026-08-05', method: 'transferencia' }] },
+      { id: 'ch-3', code: 'COB-3298', clientId: 'cl-8', tripId: 'tr-6', total: 198000, dueDate: '2026-08-05', payments: [{ id: 'p3', amount: 100000, date: '2026-07-25', method: 'pix' }, { id: 'p4', amount: 98000, date: '2026-08-02', method: 'transferencia' }] },
+      { id: 'ch-4', code: 'COB-3299', clientId: 'cl-9', tripId: 'tr-7', total: 80000, dueDate: '2026-08-10', payments: [{ id: 'p5', amount: 80000, date: '2026-08-06', method: 'boleto' }] },
+      { id: 'ch-5', code: 'COB-3295', clientId: 'cl-7', tripId: null, total: 96000, dueDate: '2026-07-25', payments: [] },
+      { id: 'ch-6', code: 'COB-3303', clientId: 'cl-5', tripId: null, total: 45000, dueDate: '2026-08-28', payments: [{ id: 'p6', amount: 15000, date: '2026-08-09', method: 'cartao' }] },
+    ],
+    blocks: [
+      { id: 'bl-1', aircraftId: 'ac-3', kind: 'manutencao', reason: 'Revisão de 100h', startAt: '2026-08-10T00:00:00', endAt: '2026-08-14T23:59:00' },
+      { id: 'bl-2', aircraftId: 'ac-1', kind: 'bloqueio', reason: 'Reposicionamento de base', startAt: '2026-08-19T06:00:00', endAt: '2026-08-19T09:00:00' },
+    ],
+  };
+}
+
+/* ============================================================
+   SELECTORS FINANCEIROS
+============================================================ */
+const paid = (c) => c.payments.reduce((s, p) => s + p.amount, 0);
+const balance = (c) => Math.max(0, c.total - paid(c));
+const chStatus = (c) => {
+  const p = paid(c);
+  if (p >= c.total && c.total > 0) return 'pago';
+  const overdue = new Date(c.dueDate + 'T23:59:59').getTime() < TODAY.getTime();
+  if (p > 0) return overdue ? 'vencido' : 'parcial';
+  return overdue ? 'vencido' : 'pendente';
+};
+const clientBalance = (id, charges) => charges.filter(c => c.clientId === id).reduce((s, c) => s + balance(c), 0);
+const clientFin = (id, charges) => {
+  const mine = charges.filter(c => c.clientId === id);
+  if (mine.some(c => chStatus(c) === 'vencido')) return 'vencido';
+  if (mine.some(c => balance(c) > 0)) return 'pendente';
+  return 'em_dia';
+};
+const clientTrips = (id, trips) => trips.filter(t => t.clientId === id && t.status !== 'recusada').length;
+
+// Composição de custo da tarifa (por unidade cobrada)
+const COST_FIELDS = [
+  ['combustivel', 'Combustível', 'Custo de combustível.'],
+  ['horaVoo', 'Hora de voo', 'Custo da hora de voo (operação/manutenção).'],
+  ['taxas', 'Taxas e tarifas', 'Taxas aeroportuárias e demais tarifas.'],
+  ['despesaPiloto', 'Despesa do piloto', 'Diária / remuneração do piloto.'],
+];
+const costSum = (costs) => { const c = costs || {}; return COST_FIELDS.reduce((a, [k]) => a + (Number(c[k]) || 0), 0); };
+
+/* ============================================================
+   PASSAGEIROS + DOCUMENTOS COM FOTO
+============================================================ */
+// Redimensiona a imagem enviada para caber no localStorage (JPEG comprimido).
+function resizeImage(file, maxDim = 900, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w >= h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        try { resolve(canvas.toDataURL('image/jpeg', quality)); } catch (err) { resolve(e.target.result); }
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Visualizador global de documento (lightbox)
+let _setDoc = null;
+function openDoc(d) { if (_setDoc) _setDoc(d); }
+function GlobalDocViewer() {
+  const [doc, setDoc] = useState(null);
+  useEffect(() => { _setDoc = setDoc; return () => { _setDoc = null; }; }, []);
+  if (!doc) return null;
+  return (
+    <Modal open={true} onClose={() => setDoc(null)} size="max-w-2xl" title="Documento do passageiro" desc="Foto do documento com foto enviada na solicitação.">
+      <img src={doc} alt="Documento do passageiro" className="mx-auto max-h-[68vh] w-auto rounded-lg border border-line" />
+    </Modal>
+  );
+}
+
+const newPax = () => ({ id: uid('px-'), name: '', doc: '' });
+
+// Editor (cliente informa nome + foto do documento de cada passageiro)
+function PassengersEditor({ value, onChange }) {
+  const add = () => onChange([...value, newPax()]);
+  const update = (id, patch) => onChange(value.map(p => p.id === id ? { ...p, ...patch } : p));
+  const remove = (id) => onChange(value.filter(p => p.id !== id));
+  const upload = async (id, file) => { if (!file) return; try { const data = await resizeImage(file); update(id, { doc: data }); } catch (e) {} };
+  return (
+    <div className="space-y-3">
+      {value.map((p, i) => (
+        <div key={p.id} className="rounded-lg border border-line p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-sub"><Icon name="User" size={14} /> Passageiro {i + 1}</span>
+            {value.length > 1 && <button type="button" onClick={() => remove(p.id)} className="text-sub hover:text-danger" aria-label="Remover passageiro"><Icon name="Trash2" size={15} /></button>}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Nome completo" required help="Nome exatamente como está no documento.">
+              <Input value={p.name} onChange={e => update(p.id, { name: e.target.value })} placeholder="Nome do passageiro" />
+            </Field>
+            <div>
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <label className="text-sm font-medium text-ink">Documento com foto<span className="ml-0.5 text-danger">*</span></label>
+                <span data-help title="Envie a foto de um documento com foto (RG, CNH ou passaporte)." className="text-sub/70"><Icon name="HelpCircle" size={14} /></span>
+              </div>
+              {p.doc ? (
+                <div className="flex items-center gap-2">
+                  <img src={p.doc} alt="Documento" onClick={() => openDoc(p.doc)} className="h-14 w-20 cursor-pointer rounded-md border border-line object-cover" />
+                  <div className="flex flex-col gap-0.5">
+                    <button type="button" onClick={() => openDoc(p.doc)} className="text-left text-xs text-primary hover:underline">Ver</button>
+                    <label className="cursor-pointer text-xs text-primary hover:underline">Trocar<input type="file" accept="image/*" className="hidden" onChange={e => upload(p.id, e.target.files[0])} /></label>
+                  </div>
+                </div>
+              ) : (
+                <label className="flex h-14 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-line bg-soft/50 text-xs font-medium text-sub hover:bg-soft">
+                  <Icon name="Camera" size={16} /> Enviar foto do documento
+                  <input type="file" accept="image/*" className="hidden" onChange={e => upload(p.id, e.target.files[0])} />
+                </label>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+      <Btn variant="outline" size="sm" onClick={add}><Icon name="UserPlus" size={16} /> Adicionar passageiro</Btn>
+    </div>
+  );
+}
+
+// Lista somente-leitura (operador vê nomes + documentos)
+function PaxList({ pax }) {
+  if (!pax || !pax.length) return null;
+  return (
+    <div className="space-y-2">
+      {pax.map((p, i) => (
+        <div key={p.id || i} className="flex items-center gap-3 rounded-lg border border-line p-2.5">
+          {p.doc ? <img src={p.doc} alt="Documento" onClick={() => openDoc(p.doc)} className="h-12 w-16 cursor-pointer rounded-md border border-line object-cover" />
+            : <div className="flex h-12 w-16 items-center justify-center rounded-md border border-dashed border-line text-sub"><Icon name="ImageOff" size={16} /></div>}
+          <div className="min-w-0"><p className="truncate text-sm font-medium">{p.name || ('Passageiro ' + (i + 1))}</p><p className="text-xs text-sub">{p.doc ? 'Documento anexado' : 'Sem documento'}</p></div>
+          {p.doc && <button onClick={() => openDoc(p.doc)} className="ml-auto whitespace-nowrap text-xs text-primary hover:underline">Ver documento</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   CONTEXTO
+============================================================ */
+const AppCtx = createContext(null);
+const useApp = () => useContext(AppCtx);
+
+/* ============================================================
+   UI PRIMITIVOS
+============================================================ */
+function Btn({ variant = 'primary', size = 'md', className = '', children, ...p }) {
+  const base = 'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap';
+  const sizes = { md: 'h-10 px-4 text-sm', sm: 'h-9 px-3 text-sm', lg: 'h-11 px-6 text-base', icon: 'h-9 w-9', xs: 'h-8 w-8' };
+  const variants = {
+    primary: 'bg-primary text-white shadow-card hover:bg-primary/90',
+    outline: 'border border-line bg-white text-ink shadow-card hover:bg-soft',
+    ghost: 'text-sub hover:bg-soft hover:text-ink',
+    danger: 'bg-danger text-white shadow-card hover:bg-danger/90',
+    success: 'bg-success text-white shadow-card hover:bg-success/90',
+  };
+  return <button className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} {...p}>{children}</button>;
+}
+
+function Card({ className = '', children, ...p }) {
+  return <div className={`rounded-xl border border-line bg-white shadow-card ${className}`} {...p}>{children}</div>;
+}
+
+function Badge({ tone = 'primary', dot, children }) {
+  const tones = {
+    primary: 'bg-primary/10 text-primary', neutral: 'bg-soft text-sub',
+    success: 'bg-success-soft text-success', warning: 'bg-warning-soft text-[#9A6A10]',
+    danger: 'bg-danger-soft text-danger',
+  };
+  const dots = { primary: 'bg-primary', neutral: 'bg-sub', success: 'bg-success', warning: 'bg-warning', danger: 'bg-danger' };
+  return <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>{dot && <span className={`h-1.5 w-1.5 rounded-full ${dots[tone]}`} />}{children}</span>;
+}
+function TripBadge({ s }) { const m = { confirmada: 'success', recusada: 'danger', em_andamento: 'primary', concluida: 'neutral', cancelada: 'neutral' }; return <Badge tone={m[s] || 'neutral'} dot>{L.trip[s] || s}</Badge>; }
+function ReqBadge({ s }) { const m = { aguardando_analise: 'warning', em_analise: 'primary', convertida: 'success', recusada: 'danger' }; return <Badge tone={m[s]} dot>{L.req[s]}</Badge>; }
+function PayBadge({ s }) { const m = { pendente: 'warning', parcial: 'primary', pago: 'success', vencido: 'danger' }; return <Badge tone={m[s]} dot>{L.pay[s]}</Badge>; }
+function FinBadge({ s }) { const m = { em_dia: 'success', pendente: 'warning', vencido: 'danger' }; return <Badge tone={m[s]} dot>{L.fin[s]}</Badge>; }
+function AcBadge({ s }) { const m = { disponivel: 'success', em_voo: 'primary', manutencao: 'warning', indisponivel: 'neutral' }; return <Badge tone={m[s]} dot>{L.acStatus[s]}</Badge>; }
+
+function Avatar({ name, size = 'h-9 w-9 text-xs' }) {
+  return <div className={`flex items-center justify-center rounded-full bg-primary/10 font-semibold text-primary ${size}`}>{initials(name)}</div>;
+}
+
+function Field({ label, help, required, children }) {
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <label className="text-sm font-medium text-ink">{label}{required && <span className="ml-0.5 text-danger">*</span>}</label>
+        {help && <span data-help title={help} className="text-sub/70 hover:text-primary"><Icon name="HelpCircle" size={14} /></span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+const inputCls = 'h-10 w-full rounded-lg border border-line bg-white px-3 text-sm shadow-card placeholder:text-sub/70 focus:outline-none focus:ring-2 focus:ring-primary/40';
+function Input(p) { return <input {...p} className={`${inputCls} ${p.className || ''}`} />; }
+function Textarea(p) { return <textarea {...p} className={`min-h-[80px] w-full rounded-lg border border-line bg-white px-3 py-2 text-sm shadow-card placeholder:text-sub/70 focus:outline-none focus:ring-2 focus:ring-primary/40 ${p.className || ''}`} />; }
+function Select({ value, onChange, children, className = '', disabled }) {
+  return <select value={value} disabled={disabled} onChange={e => onChange(e.target.value)} className={`${inputCls} ${disabled ? 'opacity-60' : ''} ${className}`}>{children}</select>;
+}
+
+function Modal({ open, onClose, title, desc, children, footer, size = 'max-w-lg' }) {
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => e.key === 'Escape' && onClose();
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain">
+      <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px]" />
+      {/* min-h-full centraliza quando cabe e permite rolar quando é maior que a tela */}
+      <div className="relative flex min-h-full items-start justify-center p-3 sm:items-center sm:p-6"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className={`relative z-10 my-2 w-full ${size} rounded-xl border border-line bg-white p-5 shadow-pop fade-in sm:my-8 sm:p-6`}>
+          <button onClick={onClose} className="absolute right-3 top-3 rounded-md p-1 text-sub hover:bg-soft sm:right-4 sm:top-4"><Icon name="X" size={18} /></button>
+          {title && <h3 className="pr-8 text-lg font-semibold tracking-tight">{title}</h3>}
+          {desc && <p className="mt-1 text-sm text-sub">{desc}</p>}
+          <div className="mt-4">{children}</div>
+          {footer && <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">{footer}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Menu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const visible = items.filter(i => !i.hidden);
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen(o => !o)} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-sub hover:bg-soft hover:text-ink"><Icon name="MoreVertical" size={16} /></button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-48 rounded-lg border border-line bg-white p-1 shadow-pop fade-in">
+          {visible.map((it, i) => (
+            <React.Fragment key={i}>
+              {it.sep && i > 0 && <div className="my-1 h-px bg-line" />}
+              <button onClick={() => { setOpen(false); it.onClick(); }}
+                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-soft ${it.danger ? 'text-danger hover:bg-danger-soft' : 'text-ink'}`}>
+                <Icon name={it.icon} size={16} />{it.label}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, icon, hint, tone = 'primary' }) {
+  const tones = { primary: 'bg-primary/10 text-primary', success: 'bg-success-soft text-success', warning: 'bg-warning-soft text-warning', danger: 'bg-danger-soft text-danger' };
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-sub">{label}</p>
+          <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
+          {hint && <p className="mt-1 text-xs text-sub">{hint}</p>}
+        </div>
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${tones[tone]}`}><Icon name={icon} size={20} /></div>
+      </div>
+    </Card>
+  );
+}
+
+function Empty({ icon, title, desc, action }) {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-14 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-soft text-sub"><Icon name={icon} size={24} /></div>
+      <h3 className="mt-4 text-sm font-semibold">{title}</h3>
+      {desc && <p className="mt-1 max-w-sm text-sm text-sub">{desc}</p>}
+      {action && <div className="mt-5">{action}</div>}
+    </div>
+  );
+}
+
+function PageHead({ title, desc, children }) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
+        {desc && <p className="mt-1 text-sm text-sub">{desc}</p>}
+      </div>
+      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+    </div>
+  );
+}
+
+function SearchBox({ value, onChange, placeholder }) {
+  return (
+    <div className="relative w-full sm:w-64">
+      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub"><Icon name="Search" size={16} /></span>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className={`${inputCls} pl-9`} />
+    </div>
+  );
+}
+
+const TH = ({ children, className = '' }) => <th className={`h-11 px-4 text-left text-xs font-semibold uppercase tracking-wide text-sub ${className}`}>{children}</th>;
+const TD = ({ children, className = '' }) => <td className={`px-4 py-3 align-middle ${className}`}>{children}</td>;
+
+/* ============================================================
+   NAVEGAÇÃO
+============================================================ */
+const NAV = {
+  operacional: [
+    { label: 'Dashboard', page: 'op-dashboard', icon: 'LayoutDashboard', hint: 'Visão geral do dia' },
+    { label: 'Agenda', page: 'op-agenda', icon: 'CalendarDays', hint: 'Calendário de voos' },
+    { label: 'Solicitações', page: 'op-solicitacoes', icon: 'Inbox', hint: 'Pedidos dos clientes' },
+    { label: 'Viagens', page: 'op-viagens', icon: 'PlaneTakeoff', hint: 'Todas as viagens' },
+    { label: 'Clientes', page: 'op-clientes', icon: 'Users', hint: 'Lista de clientes' },
+    { label: 'Aeronaves', page: 'op-aeronaves', icon: 'Plane', hint: 'Frota (uso interno)' },
+    { label: 'Configurações', page: 'op-config', icon: 'Settings', hint: 'Tarifas e ajustes' },
+  ],
+  financeiro: [
+    { label: 'Dashboard', page: 'fin-dashboard', icon: 'LayoutDashboard', hint: 'Resumo financeiro' },
+    { label: 'Financeiro', page: 'fin-financeiro', icon: 'Wallet', hint: 'Valores a receber' },
+    { label: 'Cobranças', page: 'fin-cobrancas', icon: 'ReceiptText', hint: 'Criar e ver cobranças' },
+    { label: 'Pagamentos', page: 'fin-pagamentos', icon: 'Banknote', hint: 'Registrar e dar baixa' },
+    { label: 'Clientes', page: 'fin-clientes', icon: 'Users', hint: 'Situação de cada cliente' },
+    { label: 'Relatórios', page: 'fin-relatorios', icon: 'BarChart3', hint: 'Gráficos e números' },
+  ],
+  cliente: [
+    { label: 'Início', page: 'cli-inicio', icon: 'Home', hint: 'Sua página inicial' },
+    { label: 'Solicitar Voo', page: 'cli-solicitar', icon: 'Send', hint: 'Pedir um novo voo' },
+    { label: 'Disponibilidade', page: 'cli-disp', icon: 'CalendarCheck', hint: 'Ver dias livres' },
+    { label: 'Minhas Viagens', page: 'cli-viagens', icon: 'PlaneTakeoff', hint: 'Seus voos' },
+    { label: 'Financeiro', page: 'cli-financeiro', icon: 'Wallet', hint: 'Seus pagamentos' },
+    { label: 'Meu Perfil', page: 'cli-perfil', icon: 'User', hint: 'Seus dados' },
+  ],
+};
+const HOME = { operacional: 'op-dashboard', financeiro: 'fin-dashboard', cliente: 'cli-inicio' };
+
+/* ============================================================
+   TOASTS
+============================================================ */
+function Toasts({ list }) {
+  return (
+    <div className="fixed right-4 top-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+      {list.map(t => {
+        const map = { success: { i: 'CheckCircle2', c: 'text-success' }, error: { i: 'AlertTriangle', c: 'text-danger' }, info: { i: 'Info', c: 'text-primary' }, warning: { i: 'AlertTriangle', c: 'text-warning' } };
+        const m = map[t.type] || map.info;
+        return (
+          <div key={t.id} className="flex items-start gap-3 rounded-xl border border-line bg-white p-3.5 shadow-pop fade-in">
+            <span className={m.c}><Icon name={m.i} size={18} /></span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold">{t.title}</p>
+              {t.desc && <p className="text-sm text-sub">{t.desc}</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   CONFLITO DE HORÁRIOS
+============================================================ */
+function checkConflict(db, aircraftId, start, end, ignoreId) {
+  const ns = new Date(start).getTime(), ne = new Date(end).getTime();
+  if (isNaN(ns) || isNaN(ne)) return { conflict: false };
+  const marginMs = (db.settings.marginMinutes || 0) * 60000;
+  const busy = db.trips.filter(t => t.aircraftId === aircraftId && t.id !== ignoreId && t.status !== 'recusada' && t.status !== 'cancelada');
+  for (const t of busy) {
+    const es = new Date(t.departureAt).getTime(), ee = new Date(t.returnAt).getTime();
+    // Sobreposição direta
+    if (ns < ee && ne > es) return { conflict: true, label: `${t.code} · ${t.origin} → ${t.destination}` };
+    // Intervalo mínimo entre voos (margem)
+    if (marginMs > 0 && ns < ee + marginMs && ne > es - marginMs)
+      return { conflict: true, margin: true, label: `${t.code} · intervalo mínimo de ${db.settings.marginMinutes} min entre voos` };
+  }
+  for (const b of db.blocks.filter(b => b.aircraftId === aircraftId))
+    if (overlap(start, end, b.startAt, b.endAt)) return { conflict: true, label: (b.kind === 'manutencao' ? 'Manutenção · ' : 'Bloqueio · ') + b.reason };
+  return { conflict: false };
+}
+
+/* ============================================================
+   FORM: NOVA / EDITAR VIAGEM (Operacional)
+============================================================ */
+function TripForm({ open, onClose, editing, prefill }) {
+  const { db, actions, notify, confirm } = useApp();
+  const blank = { clientId: '', aircraftId: '', origin: '', destination: '', depDate: '', depTime: '', retDate: '', retTime: '', distance: '', passengers: '1', notes: '', commercial: '' };
+  const [f, setF] = useState(blank);
+  const [pax, setPax] = useState([]);
+  useEffect(() => {
+    if (!open) return;
+    if (editing) { setF({ clientId: editing.clientId, aircraftId: editing.aircraftId || '', origin: editing.origin, destination: editing.destination, depDate: editing.departureAt.slice(0, 10), depTime: editing.departureAt.slice(11, 16), retDate: editing.returnAt.slice(0, 10), retTime: editing.returnAt.slice(11, 16), distance: editing.distanceKm ? String(editing.distanceKm) : '', passengers: String(editing.passengers), notes: editing.notes || '', commercial: editing.commercialValue ? String(editing.commercialValue) : '' }); setPax(editing.pax && editing.pax.length ? editing.pax : [newPax()]); }
+    else if (prefill) { setF({ ...blank, ...prefill, commercial: '' }); setPax(prefill.pax && prefill.pax.length ? prefill.pax : [newPax()]); }
+    else { setF(blank); setPax([newPax()]); }
+  }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const start = combine(f.depDate, f.depTime), end = combine(f.retDate, f.retTime);
+  const hasSched = f.depDate && f.depTime && f.retDate && f.retTime;
+  const schedOk = hasSched && new Date(end).getTime() > new Date(start).getTime();
+  const conflict = useMemo(() => (f.aircraftId && schedOk) ? checkConflict(db, f.aircraftId, start, end, editing && editing.id) : null, [f.aircraftId, start, end, schedOk]);
+  const tariff = useMemo(() => db.tariffs.find(t => t.aircraftId === f.aircraftId && t.active), [f.aircraftId, db.tariffs]);
+  const selAircraft = db.aircraft.find(a => a.id === f.aircraftId);
+  const speed = selAircraft && selAircraft.cruiseSpeed ? selAircraft.cruiseSpeed : 0;
+  const distance = Number(f.distance) || 0;
+  // Horas de voo estimadas (ida + volta) a partir da distância do trecho e da velocidade de cruzeiro
+  const hours = distance > 0 && speed > 0 ? Math.round((2 * distance / speed) * 10) / 10 : 0;
+  const estimated = tariff && hours > 0 ? Math.round(tariff.value * hours) : 0;
+  const paxOk = pax.length > 0 && pax.every(p => p.name.trim());
+  const canSubmit = f.clientId && f.aircraftId && f.origin && f.destination && schedOk && paxOk && !(conflict && conflict.conflict);
+  // Avaliação financeira do cliente que está sendo agendado
+  const selClient = db.clients.find(c => c.id === f.clientId);
+  const finStatus = f.clientId ? clientFin(f.clientId, db.charges) : 'em_dia';
+  const finBalance = f.clientId ? clientBalance(f.clientId, db.charges) : 0;
+  const hasPend = finStatus !== 'em_dia';
+  const finalize = () => {
+    const commercial = f.commercial ? Number(f.commercial) : estimated;
+    const payload = { clientId: f.clientId, aircraftId: f.aircraftId, origin: f.origin, destination: f.destination, departureAt: start, returnAt: end, distanceKm: distance || undefined, passengers: pax.length > 0 ? pax.length : (Number(f.passengers) || 1), pax, notes: f.notes, internalTariff: tariff && tariff.value, estimatedValue: estimated, commercialValue: commercial };
+    if (editing) { actions.updateTrip(editing.id, payload); notify('success', 'Viagem atualizada', `${editing.code} foi alterada.`); }
+    else { const t = actions.addTrip({ ...payload, status: 'confirmada' }); notify('success', 'Viagem agendada', `${t.code} confirmada${hasPend ? ' (cliente com pendência)' : ''}.`); if (prefill && prefill.requestId) actions.setRequestStatus(prefill.requestId, 'convertida'); }
+    onClose();
+  };
+  const submit = () => {
+    if (!schedOk) return notify('error', 'Datas inválidas', 'A volta precisa ser depois da ida.');
+    if (!editing && f.depDate < toISODate(TODAY)) return notify('error', 'Data no passado', 'A data de ida não pode ser anterior a hoje.');
+    if (conflict && conflict.conflict) return notify('error', 'Voo NÃO disponível', 'A aeronave já tem compromisso neste período.');
+    // O Operacional agenda direto; se houver pendência financeira, confirmar antes.
+    if (hasPend) {
+      return confirm({
+        title: 'Cliente com pendência financeira',
+        desc: `${selClient ? selClient.name : 'O cliente'} possui ${money(finBalance)} em aberto (situação: ${L.fin[finStatus]}). Deseja agendar a viagem mesmo assim?`,
+        confirmLabel: 'Agendar mesmo assim',
+        cancelLabel: 'Cancelar',
+        danger: finStatus === 'vencido',
+        onConfirm: finalize,
+      });
+    }
+    finalize();
+  };
+  return (
+    <Modal open={open} onClose={onClose} size="max-w-2xl" title={editing ? 'Editar viagem' : 'Nova viagem'}
+      desc="O Operacional agenda direto. A aeronave e a tarifa são visíveis somente para o Operacional."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!canSubmit}><Icon name="Plane" size={16} />{editing ? 'Salvar alterações' : 'Agendar viagem'}</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2"><Field label="Cliente" required help="Para quem é esta viagem.">
+          <Select value={f.clientId} onChange={v => set('clientId', v)}><option value="">Selecione o cliente</option>{db.clients.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ' · ' + c.company : ''}</option>)}</Select></Field></div>
+        {f.clientId && hasPend && (
+          <div className={`sm:col-span-2 flex items-start gap-3 rounded-lg border p-3.5 ${finStatus === 'vencido' ? 'border-danger/30 bg-danger-soft' : 'border-warning/30 bg-warning-soft'}`}>
+            <span className={finStatus === 'vencido' ? 'text-danger' : 'text-warning'}><Icon name="AlertTriangle" size={20} /></span>
+            <div className="flex-1">
+              <p className={`text-sm font-semibold ${finStatus === 'vencido' ? 'text-danger' : 'text-[#9A6A10]'}`}>Cliente com pendência financeira</p>
+              <p className="mt-0.5 text-sm text-sub">{selClient ? selClient.name : 'O cliente'} possui <strong>{money(finBalance)}</strong> em aberto · situação {L.fin[finStatus]}. Você pode agendar mesmo assim (será pedida uma confirmação).</p>
+            </div>
+            <FinBadge s={finStatus} />
+          </div>
+        )}
+        {f.clientId && !hasPend && (
+          <div className="sm:col-span-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success-soft px-3 py-2 text-sm text-success"><Icon name="CheckCircle2" size={16} /> Cliente em dia com o financeiro.</div>
+        )}
+        <Field label="Origem" required help="De onde o voo parte."><Input value={f.origin} onChange={e => set('origin', e.target.value)} placeholder="Ex: São Paulo (CGH)" /></Field>
+        <Field label="Destino" required help="Para onde o voo vai."><Input value={f.destination} onChange={e => set('destination', e.target.value)} placeholder="Ex: Rio de Janeiro (SDU)" /></Field>
+        <Field label="Data da ida" required help="Dia do embarque."><Input type="date" min={editing ? undefined : toISODate(TODAY)} value={f.depDate} onChange={e => set('depDate', e.target.value)} /></Field>
+        <Field label="Hora da ida" required help="Horário do embarque."><Input type="time" value={f.depTime} onChange={e => set('depTime', e.target.value)} /></Field>
+        <Field label="Data da volta" required help="Dia do retorno."><Input type="date" min={f.depDate || (editing ? undefined : toISODate(TODAY))} value={f.retDate} onChange={e => set('retDate', e.target.value)} /></Field>
+        <Field label="Hora da volta" required help="Horário do retorno."><Input type="time" value={f.retTime} onChange={e => set('retTime', e.target.value)} /></Field>
+        <Field label="Aeronave" required help="Só o Operacional vê a aeronave. O cliente nunca vê isto.">
+          <Select value={f.aircraftId} onChange={v => set('aircraftId', v)}><option value="">Selecione a aeronave</option>{db.aircraft.map(a => <option key={a.id} value={a.id}>{a.prefix} · {L.kind[a.kind]} · {a.model}</option>)}</Select></Field>
+        <Field label="Distância do trecho (km)" help="Distância só de ida. Usada para estimar as horas de voo (ida e volta) e o valor.">
+          <Input type="number" min="0" value={f.distance} onChange={e => set('distance', e.target.value)} placeholder="Ex: 360" /></Field>
+        {f.aircraftId && schedOk && (
+          <div className="sm:col-span-2">
+            {conflict && conflict.conflict ? (
+              <div className="flex items-start gap-3 rounded-lg border border-danger/30 bg-danger-soft p-3.5">
+                <span className="text-danger"><Icon name="AlertTriangle" size={20} /></span>
+                <div><p className="text-sm font-semibold text-danger">Voo NÃO Disponível</p>
+                  <p className="mt-0.5 text-sm text-danger/80">{conflict.margin ? 'Não há intervalo mínimo suficiente entre este voo e outro compromisso da aeronave. Ajuste o horário ou escolha outra aeronave.' : 'A aeronave selecionada já possui um compromisso neste período. Escolha outra aeronave ou altere o horário.'}</p>
+                  <p className="mt-1.5 text-xs text-danger/70">Conflito com: {conflict.label}</p></div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success-soft p-3.5">
+                <span className="text-success"><Icon name="CheckCircle2" size={20} /></span>
+                <div><p className="text-sm font-semibold text-success">Voo Disponível</p>
+                  <p className="mt-0.5 text-sm text-success/80">A aeronave está livre neste período. Você pode continuar.</p></div>
+              </div>
+            )}
+          </div>
+        )}
+        {tariff && schedOk && !(conflict && conflict.conflict) && (
+          <div className="sm:col-span-2 rounded-lg border border-line bg-soft/60 p-4">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Icon name="Calculator" size={16} className="text-primary" />Cálculo de tarifa
+              <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"><Icon name="Lock" size={12} /> Somente interno</span></div>
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <div><p className="text-xs text-sub">Tarifa da aeronave</p><p className="text-sm font-semibold">{money(tariff.value)}/h</p></div>
+              <div><p className="text-xs text-sub">Distância (ida)</p><p className="text-sm font-semibold">{distance > 0 ? distance + ' km' : '—'}</p></div>
+              <div><p className="text-xs text-sub">Velocidade cruzeiro</p><p className="text-sm font-semibold">{speed ? speed + ' km/h' : '—'}</p></div>
+              <div><p className="text-xs text-sub">Horas de voo (ida+volta)</p><p className="text-sm font-semibold">{hours > 0 ? hours + ' h' : '—'}</p></div>
+              <div><p className="text-xs text-sub">Valor estimado</p><p className="text-sm font-semibold text-primary">{hours > 0 ? money(estimated) : '—'}</p></div>
+            </div>
+            {distance <= 0 && <p className="mt-2 text-xs text-[#9A6A10]">Informe a distância do trecho para calcular as horas de voo e o valor estimado.</p>}
+            {!speed && <p className="mt-2 text-xs text-[#9A6A10]">Esta aeronave não tem velocidade de cruzeiro cadastrada (defina em Aeronaves).</p>}
+            {tariff.costs && <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">{COST_FIELDS.map(([k, label]) => <div key={k} className="rounded-md border border-line bg-white p-2"><p className="text-[11px] text-sub">{label}</p><p className="text-xs font-medium">{money((tariff.costs && tariff.costs[k]) || 0)}/h</p></div>)}</div>}
+            <div className="mt-3"><Field label="Valor comercial" help="Valor final cobrado. Pode ser ajustado."><Input type="number" value={f.commercial} onChange={e => set('commercial', e.target.value)} placeholder={String(estimated)} /></Field></div>
+          </div>
+        )}
+        <div className="sm:col-span-2">
+          <div className="mb-1 flex items-center justify-between">
+            <p className="text-sm font-semibold">Passageiros</p>
+            <span className="text-xs text-sub">{pax.length} passageiro{pax.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="mb-3 text-xs text-sub">Adicione os passageiros e, se tiver, anexe a foto do documento com foto de cada um.</p>
+          <PassengersEditor value={pax} onChange={setPax} />
+        </div>
+        <div className="sm:col-span-2"><Field label="Observações" help="Informações extras para a operação."><Textarea value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Preferências do cliente, bagagem, etc." /></Field></div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   FORM: AERONAVE
+============================================================ */
+function AircraftForm({ open, onClose, editing }) {
+  const { actions, notify } = useApp();
+  const blank = { prefix: '', kind: 'aviao', model: '', manufacturer: '', capacity: '4', cruiseSpeed: '', status: 'disponivel' };
+  const [f, setF] = useState(blank);
+  useEffect(() => { if (open) setF(editing ? { prefix: editing.prefix, kind: editing.kind, model: editing.model, manufacturer: editing.manufacturer, capacity: String(editing.capacity), cruiseSpeed: editing.cruiseSpeed ? String(editing.cruiseSpeed) : '', status: editing.status } : blank); }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const valid = f.prefix && f.model && f.manufacturer;
+  const submit = () => {
+    if (!valid) return notify('error', 'Campos obrigatórios', 'Preencha prefixo, modelo e fabricante.');
+    const p = { prefix: f.prefix.toUpperCase(), kind: f.kind, model: f.model, manufacturer: f.manufacturer, capacity: Number(f.capacity) || 1, cruiseSpeed: Number(f.cruiseSpeed) || 0, status: f.status };
+    if (editing) { actions.updateAircraft(editing.id, p); notify('success', 'Aeronave atualizada', p.prefix); }
+    else { actions.addAircraft(p); notify('success', 'Aeronave cadastrada', p.prefix + ' adicionada à frota.'); }
+    onClose();
+  };
+  return (
+    <Modal open={open} onClose={onClose} title={editing ? 'Editar aeronave' : 'Nova aeronave'} desc="Informação interna. Clientes nunca visualizam a frota."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Salvar' : 'Cadastrar'}</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Prefixo" required help="Matrícula (ex: PR-HLX)."><Input value={f.prefix} onChange={e => set('prefix', e.target.value)} placeholder="PR-HLX" className="uppercase" /></Field>
+        <Field label="Tipo" required help="Avião ou helicóptero."><Select value={f.kind} onChange={v => set('kind', v)}><option value="aviao">Avião</option><option value="helicoptero">Helicóptero</option></Select></Field>
+        <Field label="Modelo" required help="Modelo da aeronave."><Input value={f.model} onChange={e => set('model', e.target.value)} placeholder="Phenom 300E" /></Field>
+        <Field label="Fabricante" required help="Quem fabricou."><Input value={f.manufacturer} onChange={e => set('manufacturer', e.target.value)} placeholder="Embraer" /></Field>
+        <Field label="Capacidade" required help="Quantos passageiros cabem."><Input type="number" min="1" value={f.capacity} onChange={e => set('capacity', e.target.value)} /></Field>
+        <Field label="Velocidade de cruzeiro (km/h)" help="Usada para estimar as horas de voo a partir da distância."><Input type="number" min="0" value={f.cruiseSpeed} onChange={e => set('cruiseSpeed', e.target.value)} placeholder="Ex: 860" /></Field>
+        <Field label="Status" required help="Situação atual."><Select value={f.status} onChange={v => set('status', v)}>{Object.keys(L.acStatus).map(s => <option key={s} value={s}>{L.acStatus[s]}</option>)}</Select></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   FORM: TARIFA
+============================================================ */
+function TariffForm({ open, onClose, editing }) {
+  const { db, actions, notify } = useApp();
+  const blank = { aircraftId: '', combustivel: '', horaVoo: '', taxas: '', despesaPiloto: '', unit: 'por_hora', startDate: '', endDate: '', active: true };
+  const [f, setF] = useState(blank);
+  useEffect(() => {
+    if (!open) return;
+    if (editing) {
+      const c = editing.costs || {};
+      // compatível com tarifas antigas: se não houver composição, joga o valor total em "hora de voo"
+      const hasCosts = c.combustivel != null || c.horaVoo != null || c.taxas != null || c.despesaPiloto != null;
+      setF({
+        aircraftId: editing.aircraftId, unit: editing.unit, startDate: editing.startDate, endDate: editing.endDate || '', active: editing.active,
+        combustivel: c.combustivel != null ? String(c.combustivel) : '',
+        horaVoo: c.horaVoo != null ? String(c.horaVoo) : (hasCosts ? '' : (editing.value ? String(editing.value) : '')),
+        taxas: c.taxas != null ? String(c.taxas) : '',
+        despesaPiloto: c.despesaPiloto != null ? String(c.despesaPiloto) : '',
+      });
+    } else setF(blank);
+  }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const total = COST_FIELDS.reduce((s, [k]) => s + (Number(f[k]) || 0), 0);
+  const valid = f.aircraftId && total > 0 && f.startDate;
+  const submit = () => {
+    if (!valid) return notify('error', 'Campos obrigatórios', 'Selecione a aeronave, informe ao menos um valor e a data inicial.');
+    const costs = { combustivel: Number(f.combustivel) || 0, horaVoo: Number(f.horaVoo) || 0, taxas: Number(f.taxas) || 0, despesaPiloto: Number(f.despesaPiloto) || 0 };
+    const p = { aircraftId: f.aircraftId, value: total, costs, unit: f.unit, startDate: f.startDate, endDate: f.endDate || undefined, active: f.active };
+    if (editing) { actions.updateTariff(editing.id, p); notify('success', 'Tarifa atualizada'); } else { actions.addTariff(p); notify('success', 'Tarifa criada'); }
+    onClose();
+  };
+  const moneyInput = (k, label, help) => (
+    <Field key={k} label={label} help={help}>
+      <div className="relative"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-sub">R$</span>
+        <Input type="number" min="0" value={f[k]} onChange={e => set(k, e.target.value)} className="pl-9" placeholder="0" /></div>
+    </Field>
+  );
+  return (
+    <Modal open={open} onClose={onClose} title={editing ? 'Editar tarifa' : 'Nova tarifa'} desc="Monte o valor da tarifa somando os custos. Uso interno."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Salvar' : 'Criar tarifa'}</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2"><Field label="Aeronave" required help="Aeronave a que a tarifa se aplica."><Select value={f.aircraftId} onChange={v => set('aircraftId', v)}><option value="">Selecione</option>{db.aircraft.map(a => <option key={a.id} value={a.id}>{a.prefix} · {L.kind[a.kind]}</option>)}</Select></Field></div>
+        <div className="sm:col-span-2">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sub">Composição do custo</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {COST_FIELDS.map(([k, label, help]) => moneyInput(k, label, help))}
+          </div>
+        </div>
+        <div className="sm:col-span-2 flex items-center justify-between rounded-lg border border-primary/20 bg-primary-soft/50 p-3">
+          <div><p className="text-sm font-medium text-primary-dark">Valor total da tarifa</p><p className="text-xs text-sub">Combustível + hora de voo + taxas e tarifas + despesa do piloto.</p></div>
+          <p className="text-lg font-semibold text-primary">{money(total)}{f.unit === 'por_hora' ? '/h' : ''}</p>
+        </div>
+        <Field label="Tipo de cobrança" required help="Como é cobrado."><Select value={f.unit} onChange={v => set('unit', v)}>{Object.keys(L.unit).map(u => <option key={u} value={u}>{L.unit[u]}</option>)}</Select></Field>
+        <Field label="Data inicial" required help="A partir de quando vale."><Input type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
+        <Field label="Data final" help="Até quando vale (opcional)."><Input type="date" value={f.endDate} onChange={e => set('endDate', e.target.value)} /></Field>
+        <div className="flex items-center justify-between rounded-lg border border-line p-3">
+          <div><p className="text-sm font-medium">Tarifa ativa</p><p className="text-xs text-sub">Só tarifas ativas entram no cálculo.</p></div>
+          <Toggle checked={f.active} onChange={v => set('active', v)} />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+function Toggle({ checked, onChange }) {
+  return <button type="button" onClick={() => onChange(!checked)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-primary' : 'bg-slate-300'}`}><span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} /></button>;
+}
+
+/* ============================================================
+   FORM: CLIENTE + DETALHE
+============================================================ */
+function ClientForm({ open, onClose, editing }) {
+  const { actions, notify } = useApp();
+  const blank = { name: '', company: '', phone: '', email: '', document: '' };
+  const [f, setF] = useState(blank);
+  useEffect(() => { if (open) setF(editing ? { name: editing.name, company: editing.company || '', phone: editing.phone, email: editing.email, document: editing.document } : blank); }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const valid = f.name && f.email;
+  const submit = () => {
+    if (!valid) return notify('error', 'Campos obrigatórios', 'Informe nome e e-mail.');
+    if (editing) { actions.updateClient(editing.id, f); notify('success', 'Cliente atualizado', f.name); } else { actions.addClient(f); notify('success', 'Cliente cadastrado', f.name); }
+    onClose();
+  };
+  return (
+    <Modal open={open} onClose={onClose} title={editing ? 'Editar cliente' : 'Novo cliente'} desc="Dados de contato do cliente."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Salvar' : 'Cadastrar'}</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2"><Field label="Nome" required help="Nome completo."><Input value={f.name} onChange={e => set('name', e.target.value)} placeholder="Ex: Ricardo Menezes" /></Field></div>
+        <Field label="Empresa" help="Empresa (opcional)."><Input value={f.company} onChange={e => set('company', e.target.value)} /></Field>
+        <Field label="Documento" help="CPF ou CNPJ."><Input value={f.document} onChange={e => set('document', e.target.value)} /></Field>
+        <Field label="Telefone" help="Com DDD."><Input value={f.phone} onChange={e => set('phone', e.target.value)} /></Field>
+        <Field label="E-mail" required help="E-mail de contato."><Input type="email" value={f.email} onChange={e => set('email', e.target.value)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+function ClientDetail({ open, onClose, client, showAircraft }) {
+  const { db } = useApp();
+  const [tab, setTab] = useState('dados');
+  useEffect(() => { if (open) setTab('dados'); }, [open]);
+  if (!client) return null;
+  const mine = db.trips.filter(t => t.clientId === client.id);
+  const upcoming = mine.filter(t => isFuture(t.departureAt) && t.status !== 'recusada').sort((a, b) => new Date(a.departureAt) - new Date(b.departureAt));
+  const history = mine.filter(t => !isFuture(t.departureAt) || t.status === 'concluida').sort((a, b) => new Date(b.departureAt) - new Date(a.departureAt));
+  const myCharges = db.charges.filter(c => c.clientId === client.id);
+  const acPrefix = (id) => { const a = db.aircraft.find(x => x.id === id); return a ? a.prefix : '—'; };
+  const tabs = [['dados', 'Dados'], ['prox', 'Próximos'], ['hist', 'Histórico'], ['fin', 'Financeiro']];
+  const tripRow = (t, when) => (
+    <div key={t.id} className="flex items-center justify-between rounded-lg border border-line p-3">
+      <div><p className="text-sm font-medium">{t.origin} → {t.destination}</p><p className="text-xs text-sub">{when}{showAircraft ? ' · ' + acPrefix(t.aircraftId) : ''}</p></div>
+      <TripBadge s={t.status} />
+    </div>
+  );
+  return (
+    <Modal open={open} onClose={onClose} size="max-w-2xl">
+      <div className="-mt-2 flex items-center gap-3">
+        <Avatar name={client.name} size="h-12 w-12 text-sm" />
+        <div><h3 className="text-lg font-semibold">{client.name}</h3><p className="text-sm text-sub">{client.company || 'Cliente pessoa física'}</p></div>
+        <div className="ml-auto"><FinBadge s={clientFin(client.id, db.charges)} /></div>
+      </div>
+      <div className="mt-4 inline-flex w-full rounded-lg bg-soft p-1">
+        {tabs.map(([k, lbl]) => <button key={k} onClick={() => setTab(k)} className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium ${tab === k ? 'bg-white shadow-card' : 'text-sub'}`}>{lbl}</button>)}
+      </div>
+      <div className="mt-4">
+        {tab === 'dados' && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <DetailRow icon="Mail" label="E-mail" value={client.email} />
+            <DetailRow icon="Phone" label="Telefone" value={client.phone || '—'} />
+            <DetailRow icon="CreditCard" label="Documento" value={client.document || '—'} />
+            <DetailRow icon="PlaneTakeoff" label="Total de viagens" value={String(clientTrips(client.id, db.trips))} />
+          </div>
+        )}
+        {tab === 'prox' && (upcoming.length ? <div className="space-y-2">{upcoming.map(t => tripRow(t, fdatetime(t.departureAt)))}</div> : <Empty icon="PlaneTakeoff" title="Sem voos futuros" />)}
+        {tab === 'hist' && (history.length ? <div className="space-y-2">{history.map(t => tripRow(t, fdate(t.departureAt)))}</div> : <Empty icon="Plane" title="Sem histórico" />)}
+        {tab === 'fin' && (
+          <div>
+            <div className="mb-3 flex items-center justify-between rounded-lg bg-soft p-3"><span className="flex items-center gap-2 text-sm text-sub"><Icon name="Wallet" size={16} /> Saldo em aberto</span><span className="text-lg font-semibold">{money(clientBalance(client.id, db.charges))}</span></div>
+            {myCharges.length ? <div className="space-y-2">{myCharges.map(c => (
+              <div key={c.id} className="flex items-center justify-between rounded-lg border border-line p-3">
+                <div><p className="text-sm font-medium">{c.code}</p><p className="text-xs text-sub">Vence {fdate(c.dueDate)}</p></div>
+                <div className="text-right"><p className="text-sm font-semibold">{money(balance(c))}</p><PayBadge s={chStatus(c)} /></div>
+              </div>))}</div> : <Empty icon="Wallet" title="Sem cobranças" />}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+function DetailRow({ icon, label, value }) {
+  return <div className="flex items-center gap-3 rounded-lg border border-line p-3"><div className="flex h-9 w-9 items-center justify-center rounded-lg bg-soft text-sub"><Icon name={icon} size={16} /></div><div className="min-w-0"><p className="text-xs text-sub">{label}</p><p className="truncate text-sm font-medium">{value}</p></div></div>;
+}
+
+/* ============================================================
+   FORM: COBRANÇA
+============================================================ */
+function ChargeForm({ open, onClose }) {
+  const { db, actions, notify } = useApp();
+  const [f, setF] = useState({ clientId: '', tripId: '', total: '', dueDate: '' });
+  useEffect(() => { if (open) setF({ clientId: '', tripId: '', total: '', dueDate: '' }); }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const clientTripsList = db.trips.filter(t => t.clientId === f.clientId);
+  const valid = f.clientId && f.total && f.dueDate;
+  const submit = () => {
+    if (!valid) return notify('error', 'Campos obrigatórios', 'Informe cliente, valor e vencimento.');
+    actions.addCharge({ clientId: f.clientId, tripId: f.tripId || null, total: Number(f.total), dueDate: f.dueDate });
+    notify('success', 'Cobrança criada'); onClose();
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="Nova cobrança" desc="Crie uma cobrança para um cliente, ligada ou não a uma viagem."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!valid}>Criar cobrança</Btn></>}>
+      <div className="grid gap-4">
+        <Field label="Cliente" required help="Para quem é a cobrança."><Select value={f.clientId} onChange={v => { set('clientId', v); set('tripId', ''); }}><option value="">Selecione</option>{db.clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Viagem" help="Viagem relacionada (opcional)."><Select value={f.tripId} onChange={v => set('tripId', v)} disabled={!f.clientId}><option value="">{f.clientId ? 'Sem viagem específica' : 'Escolha o cliente primeiro'}</option>{clientTripsList.map(t => <option key={t.id} value={t.id}>{t.code} · {t.origin} → {t.destination}</option>)}</Select></Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Valor total" required help="Valor da cobrança (R$)."><Input type="number" value={f.total} onChange={e => set('total', e.target.value)} placeholder="30000" /></Field>
+          <Field label="Vencimento" required help="Data limite para pagamento."><Input type="date" value={f.dueDate} onChange={e => set('dueDate', e.target.value)} /></Field>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   FORM: REGISTRAR PAGAMENTO
+============================================================ */
+function PaymentForm({ open, onClose, presetChargeId }) {
+  const { db, actions, notify } = useApp();
+  const [f, setF] = useState({ clientId: '', chargeId: '', amount: '', date: '2026-08-11', method: 'pix', note: '' });
+  useEffect(() => {
+    if (!open) return;
+    if (presetChargeId) { const ch = db.charges.find(c => c.id === presetChargeId); setF({ clientId: ch ? ch.clientId : '', chargeId: presetChargeId, amount: ch ? String(balance(ch)) : '', date: '2026-08-11', method: 'pix', note: '' }); }
+    else setF({ clientId: '', chargeId: '', amount: '', date: '2026-08-11', method: 'pix', note: '' });
+  }, [open]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const clientCharges = db.charges.filter(c => c.clientId === f.clientId && balance(c) > 0);
+  const ch = db.charges.find(c => c.id === f.chargeId);
+  const bal = ch ? balance(ch) : 0;
+  const amt = Number(f.amount) || 0;
+  const remaining = Math.max(0, bal - amt);
+  const valid = f.clientId && f.chargeId && amt > 0 && amt <= bal;
+  const submit = () => {
+    if (!valid) return notify('error', 'Verifique os dados', 'O valor deve ser maior que zero e não pode exceder o saldo.');
+    actions.addPayment(f.chargeId, { amount: amt, date: f.date, method: f.method, note: f.note || undefined });
+    if (remaining === 0) notify('success', 'Pagamento registrado', 'Cobrança quitada por completo.');
+    else notify('success', 'Pagamento parcial registrado', 'Saldo restante: ' + money(remaining));
+    onClose();
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="Registrar pagamento" desc="Registre um pagamento total ou parcial de uma cobrança."
+      footer={<><Btn variant="outline" onClick={onClose}>Cancelar</Btn><Btn onClick={submit} disabled={!valid}>Registrar pagamento</Btn></>}>
+      <div className="grid gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Cliente" required help="Quem está pagando."><Select value={f.clientId} disabled={!!presetChargeId} onChange={v => { set('clientId', v); set('chargeId', ''); set('amount', ''); }}><option value="">Selecione</option>{db.clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+          <Field label="Cobrança" required help="Cobrança que está sendo paga."><Select value={f.chargeId} disabled={!f.clientId || !!presetChargeId} onChange={v => { set('chargeId', v); const c = db.charges.find(x => x.id === v); if (c) set('amount', String(balance(c))); }}><option value="">Selecione</option>{clientCharges.map(c => <option key={c.id} value={c.id}>{c.code} · saldo {money(balance(c))}</option>)}</Select></Field>
+        </div>
+        {ch && <div className="grid grid-cols-3 gap-2 rounded-lg bg-soft p-3 text-center text-sm">
+          <div><p className="text-xs text-sub">Total</p><p className="font-semibold">{money(ch.total)}</p></div>
+          <div><p className="text-xs text-sub">Já pago</p><p className="font-semibold">{money(paid(ch))}</p></div>
+          <div><p className="text-xs text-sub">Saldo</p><p className="font-semibold text-primary">{money(bal)}</p></div>
+        </div>}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Valor recebido" required help="Quanto foi recebido agora.">
+            <Input type="number" value={f.amount} onChange={e => set('amount', e.target.value)} placeholder="10000" />
+            {ch && amt > bal && <p className="mt-1 text-xs text-danger">Não pode exceder {money(bal)}.</p>}
+            {ch && amt > 0 && amt < bal && <p className="mt-1 text-xs text-sub">Parcial · saldo restante {money(remaining)}.</p>}
+          </Field>
+          <Field label="Data" required help="Data do recebimento."><Input type="date" value={f.date} onChange={e => set('date', e.target.value)} /></Field>
+        </div>
+        <Field label="Forma de pagamento" required help="Como o cliente pagou."><Select value={f.method} onChange={v => set('method', v)}>{Object.keys(L.method).map(m => <option key={m} value={m}>{L.method[m]}</option>)}</Select></Field>
+        <Field label="Observação" help="Anotação opcional."><Textarea value={f.note} onChange={e => set('note', e.target.value)} placeholder="Ex: primeira parcela." /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   CONFIRMAÇÃO (via contexto)
+============================================================ */
+function ConfirmModal({ state, onClose }) {
+  if (!state) return null;
+  return (
+    <Modal open={true} onClose={onClose} size="max-w-md">
+      <div className="flex items-start gap-3">
+        {state.danger && <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-danger-soft text-danger"><Icon name="AlertTriangle" size={20} /></div>}
+        <div><h3 className="text-lg font-semibold">{state.title}</h3>{state.desc && <p className="mt-1.5 text-sm text-sub">{state.desc}</p>}</div>
+      </div>
+      <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Btn variant="outline" onClick={onClose}>{state.cancelLabel || 'Cancelar'}</Btn>
+        <Btn variant={state.danger ? 'danger' : 'primary'} onClick={() => { state.onConfirm(); onClose(); }}>{state.confirmLabel || 'Confirmar'}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   CALENDÁRIO (mês / semana / dia)
+============================================================ */
+const WD = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const MONTHS = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+const hhmm = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+function buildEvents(db, mask) {
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : 'Cliente'; };
+  const pf = (id) => { const a = db.aircraft.find(x => x.id === id); return a ? a.prefix : '—'; };
+  const te = db.trips.filter(t => t.status !== 'recusada' && t.status !== 'cancelada').map(t => ({ id: t.id, kind: 'trip', start: new Date(t.departureAt), end: new Date(t.returnAt), title: mask ? 'Ocupado' : t.origin + ' → ' + t.destination, client: mask ? null : cn(t.clientId), aircraft: mask ? null : pf(t.aircraftId), origin: t.origin, destination: t.destination, status: t.status }));
+  const be = db.blocks.map(b => ({ id: b.id, kind: b.kind, start: new Date(b.startAt), end: new Date(b.endAt), title: mask ? 'Indisponível' : (b.kind === 'manutencao' ? 'Manutenção' : 'Bloqueio'), subtitle: mask ? null : b.reason, aircraft: mask ? null : pf(b.aircraftId) }));
+  return [...te, ...be];
+}
+function eventsOnDay(events, day) {
+  const target = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  return events.filter(e => {
+    const s = new Date(e.start.getFullYear(), e.start.getMonth(), e.start.getDate());
+    const en = new Date(e.end.getFullYear(), e.end.getMonth(), e.end.getDate());
+    return target >= s && target <= en;
+  }).sort((a, b) => a.start - b.start);
+}
+const EV_CLS = { trip: 'bg-primary/10 text-primary border-primary/20', manutencao: 'bg-warning-soft text-[#9A6A10] border-warning/30', bloqueio: 'bg-slate-100 text-slate-600 border-slate-300' };
+const EV_DOT = { trip: 'bg-primary', manutencao: 'bg-warning', bloqueio: 'bg-slate-400' };
+
+function Calendar({ events, onEventClick, onDayClick }) {
+  const [view, setView] = useState('mes');
+  const [cursor, setCursor] = useState(TODAY);
+  const move = (dir) => setCursor(c => view === 'mes' ? addMonths(c, dir) : addDays(c, view === 'semana' ? dir * 7 : dir));
+  let title;
+  if (view === 'mes') title = MONTHS[cursor.getMonth()] + ' de ' + cursor.getFullYear();
+  else if (view === 'dia') title = WD[cursor.getDay()] + ', ' + cursor.getDate() + ' de ' + MONTHS[cursor.getMonth()];
+  else { const s = addDays(cursor, -cursor.getDay()); const e = addDays(s, 6); title = `${s.getDate()}/${s.getMonth() + 1} – ${e.getDate()}/${e.getMonth() + 1}`; }
+
+  // month grid
+  const todayD = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate());
+  const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const gridStart = addDays(first, -first.getDay());
+  const monthDays = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  const weekStart = addDays(cursor, -cursor.getDay());
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row sm:items-center">
+        <div className="flex items-center gap-1">
+          <Btn variant="outline" size="icon" onClick={() => move(-1)}><Icon name="ChevronLeft" size={16} /></Btn>
+          <Btn variant="outline" size="icon" onClick={() => move(1)}><Icon name="ChevronRight" size={16} /></Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setCursor(TODAY)}>Hoje</Btn>
+          <span className="ml-2 text-sm font-semibold capitalize">{title}</span>
+        </div>
+        <div className="sm:ml-auto"><div className="inline-flex rounded-lg bg-soft p-1">
+          {[['mes', 'Mês'], ['semana', 'Semana'], ['dia', 'Dia']].map(([v, lbl]) => <button key={v} onClick={() => setView(v)} className={`rounded-md px-3 py-1.5 text-sm font-medium ${view === v ? 'bg-white shadow-card' : 'text-sub'}`}>{lbl}</button>)}
+        </div></div>
+      </div>
+
+      {view === 'mes' && (
+        <div>
+          <div className="grid grid-cols-7 border-b border-line">{WD.map(w => <div key={w} className="px-2 py-2 text-center text-xs font-semibold uppercase text-sub">{w}</div>)}</div>
+          <div className="grid grid-cols-7">
+            {monthDays.map((day, i) => {
+              const evs = eventsOnDay(events, day);
+              const inMonth = day.getMonth() === cursor.getMonth();
+              const today = sameDay(day.toISOString(), TODAY);
+              const isPast = new Date(day.getFullYear(), day.getMonth(), day.getDate()) < todayD;
+              const canPick = onDayClick && !isPast;
+              return (
+                <div key={i} onClick={() => canPick && onDayClick(day)} title={canPick ? 'Agendar viagem nesta data' : (isPast && onDayClick ? 'Data já passou' : undefined)}
+                  className={`group min-h-[104px] border-b border-r border-line p-1.5 ${!inMonth ? 'bg-soft/40' : ''} ${isPast && inMonth ? 'bg-soft/30' : ''} ${i % 7 === 0 ? 'border-l' : ''} ${canPick ? 'cursor-pointer transition-colors hover:bg-primary-soft/40' : ''}`}>
+                  <div className="mb-1 flex items-center justify-between">
+                    {canPick ? <span className="opacity-0 transition-opacity group-hover:opacity-100 text-primary"><Icon name="Plus" size={14} /></span> : <span />}
+                    <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${today ? 'bg-primary text-white' : inMonth ? '' : 'text-sub/50'}`}>{day.getDate()}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {evs.slice(0, 3).map(e => <button key={e.id} onClick={(ev) => { ev.stopPropagation(); onEventClick(e); }} className={`flex w-full items-center gap-1 truncate rounded border px-1.5 py-0.5 text-left text-[11px] ${EV_CLS[e.kind]}`}><span className="font-medium">{hhmm(e.start)}</span><span className="truncate">{e.aircraft ? e.aircraft + ' · ' : ''}{e.client || e.title}</span></button>)}
+                    {evs.length > 3 && <span className="block px-1 text-[11px] text-sub">+{evs.length - 3} mais</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {view === 'semana' && (
+        <div className="grid grid-cols-1 divide-y divide-line sm:grid-cols-7 sm:divide-x sm:divide-y-0">
+          {weekDays.map((day, i) => {
+            const evs = eventsOnDay(events, day);
+            const today = sameDay(day.toISOString(), TODAY);
+            return (
+              <div key={i} className="min-h-[200px] p-2">
+                <div className="mb-2 flex items-center justify-between"><span className="text-xs font-medium uppercase text-sub">{WD[day.getDay()]}</span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${today ? 'bg-primary text-white' : ''}`}>{day.getDate()}</span></div>
+                <div className="space-y-1.5">{evs.length ? evs.map(e => <button key={e.id} onClick={() => onEventClick(e)} className={`w-full rounded-md border p-1.5 text-left text-[11px] ${EV_CLS[e.kind]}`}><span className="block font-semibold">{hhmm(e.start)}</span><span className="block truncate">{e.client || e.title}</span></button>) : <p className="px-1 text-[11px] text-sub/50">—</p>}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {view === 'dia' && (
+        <div className="p-4">
+          {eventsOnDay(events, cursor).length ? <div className="space-y-2">{eventsOnDay(events, cursor).map(e => (
+            <button key={e.id} onClick={() => onEventClick(e)} className="flex w-full items-center gap-3 rounded-lg border border-line p-3 text-left hover:bg-soft/60">
+              <span className={`h-2.5 w-2.5 rounded-full ${EV_DOT[e.kind]}`} /><span className="w-14 text-sm font-semibold">{hhmm(e.start)}</span>
+              <div className="flex-1"><p className="text-sm font-medium">{e.client || e.title}</p><p className="text-xs text-sub">{e.origin ? e.origin + ' → ' + e.destination : (e.subtitle || '')}{e.aircraft ? ' · ' + e.aircraft : ''}</p></div>
+            </button>))}</div> : <div className="py-12 text-center text-sm text-sub">Nenhum compromisso neste dia.</div>}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-4 border-t border-line p-4 text-xs text-sub">
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-primary" />Voo</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-warning" />Manutenção</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-400" />Bloqueio</span>
+      </div>
+    </Card>
+  );
+}
+
+/* ============================================================
+   VIEW: CLIENTES (compartilhada Operacional/Financeiro)
+============================================================ */
+function ClientsView({ desc, canCreate, showAircraft }) {
+  const { db } = useApp();
+  const [q, setQ] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const filtered = db.clients.filter(c => !q || [c.name, c.company, c.email].join(' ').toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="space-y-6">
+      <PageHead title="Clientes" desc={desc}>{canCreate && <Btn onClick={() => { setEditing(null); setFormOpen(true); }}><Icon name="Plus" size={16} /> Novo cliente</Btn>}</PageHead>
+      <Card>
+        <div className="border-b border-line p-4"><SearchBox value={q} onChange={setQ} placeholder="Buscar por nome, empresa ou e-mail" /></div>
+        {filtered.length === 0 ? <Empty icon="Users" title="Nenhum cliente encontrado" desc="Ajuste a busca." /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm">
+            <thead><tr className="border-b border-line"><TH>Cliente</TH><TH>Telefone</TH><TH>E-mail</TH><TH className="text-center">Viagens</TH><TH>Valor pendente</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(c => {
+              const bal = clientBalance(c.id, db.charges);
+              return (
+                <tr key={c.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-soft/50" onClick={() => setDetail(c)}>
+                  <TD><div className="flex items-center gap-2.5"><Avatar name={c.name} /><div className="min-w-0"><p className="truncate font-medium">{c.name}</p>{c.company && <p className="truncate text-xs text-sub">{c.company}</p>}</div></div></TD>
+                  <TD className="whitespace-nowrap text-sub">{c.phone || '—'}</TD>
+                  <TD className="text-sub">{c.email}</TD>
+                  <TD className="text-center">{clientTrips(c.id, db.trips)}</TD>
+                  <TD className="whitespace-nowrap font-medium">{bal > 0 ? money(bal) : '—'}</TD>
+                  <TD><FinBadge s={clientFin(c.id, db.charges)} /></TD>
+                  <TD onClick={e => e.stopPropagation()}><Menu items={[{ label: 'Ver detalhes', icon: 'Eye', onClick: () => setDetail(c) }, { label: 'Editar', icon: 'Pencil', hidden: !canCreate, onClick: () => { setEditing(c); setFormOpen(true); } }]} /></TD>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
+      </Card>
+      <ClientForm open={formOpen} onClose={() => setFormOpen(false)} editing={editing} />
+      <ClientDetail open={!!detail} onClose={() => setDetail(null)} client={detail} showAircraft={showAircraft} />
+    </div>
+  );
+}
+
+/* ============================================================
+   OPERACIONAL — DASHBOARD
+============================================================ */
+function OpDashboard() {
+  const { db, go } = useApp();
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const active = db.trips.filter(t => t.status !== 'recusada' && t.status !== 'cancelada');
+  const today = active.filter(t => sameDay(t.departureAt, TODAY));
+  const upcoming = active.filter(t => isFuture(t.departureAt)).sort((a, b) => new Date(a.departureAt) - new Date(b.departureAt));
+  const pending = db.requests.filter(r => r.status === 'aguardando_analise');
+  const confirmedUpcoming = upcoming.filter(t => t.status === 'confirmada');
+  const avail = db.aircraft.filter(a => a.status === 'disponivel');
+  const withPending = db.clients.filter(c => clientFin(c.id, db.charges) !== 'em_dia');
+  return (
+    <div className="space-y-6">
+      <PageHead title="Dashboard" desc="Visão geral da operação de hoje, 11 de agosto de 2026." />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <Stat label="Voos hoje" value={today.length} icon="PlaneTakeoff" hint="Embarques agendados" />
+        <Stat label="Próximos voos" value={upcoming.length} icon="Clock3" hint="A partir de hoje" />
+        <Stat label="Solicitações" value={pending.length} icon="Inbox" tone="warning" hint="Aguardando análise" />
+        <Stat label="Confirmados" value={confirmedUpcoming.length} icon="CheckCircle2" tone="success" hint="Próximos voos confirmados" />
+        <Stat label="Aeronaves livres" value={`${avail.length}/${db.aircraft.length}`} icon="Plane" tone="success" hint="Disponíveis" />
+        <Stat label="Clientes c/ pendência" value={withPending.length} icon="AlertTriangle" tone="danger" hint="Pagamento em aberto" />
+      </div>
+      {withPending.length > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning-soft p-4">
+          <span className="text-warning"><Icon name="AlertTriangle" size={20} /></span>
+          <div className="flex-1"><p className="text-sm font-semibold">{withPending.length} {withPending.length === 1 ? 'cliente possui pagamento pendente' : 'clientes possuem pagamentos pendentes'}</p><p className="mt-0.5 text-sm text-sub">Revise a situação financeira antes de confirmar novos voos.</p></div>
+          <Btn variant="outline" size="sm" onClick={() => go('op-clientes')}>Ver clientes</Btn>
+        </div>
+      )}
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <div className="flex items-center justify-between p-5 pb-3"><div><h3 className="font-semibold">Próximos voos</h3><p className="text-sm text-sub">Agenda dos próximos embarques</p></div><Btn variant="ghost" size="sm" onClick={() => go('op-viagens')}>Ver todas <Icon name="ArrowRight" size={16} /></Btn></div>
+          {upcoming.length === 0 ? <Empty icon="PlaneTakeoff" title="Nenhum voo agendado" /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Horário</TH><TH>Cliente</TH><TH>Origem</TH><TH>Destino</TH><TH>Status</TH></tr></thead>
+              <tbody>{upcoming.slice(0, 6).map(t => (
+                <tr key={t.id} className="border-b border-line last:border-0"><TD className="whitespace-nowrap font-medium">{fdatetime(t.departureAt)}</TD>
+                  <TD><div className="flex items-center gap-2"><Avatar name={cn(t.clientId)} size="h-7 w-7 text-[10px]" /><span className="whitespace-nowrap">{cn(t.clientId)}</span></div></TD>
+                  <TD className="text-sub">{t.origin}</TD><TD className="text-sub">{t.destination}</TD><TD><TripBadge s={t.status} /></TD></tr>))}</tbody></table></div>
+          )}
+        </Card>
+        <Card>
+          <div className="p-5 pb-3"><h3 className="font-semibold">Solicitações recentes</h3><p className="text-sm text-sub">Aguardando sua análise</p></div>
+          <div className="space-y-3 px-5 pb-5">
+            {pending.length === 0 ? <Empty icon="Inbox" title="Tudo em dia" /> : pending.slice(0, 5).map(r => (
+              <div key={r.id} className="rounded-lg border border-line p-3 hover:bg-soft/40"><div className="flex items-center justify-between"><span className="text-sm font-medium">{cn(r.clientId)}</span><span className="text-xs text-sub">{r.code}</span></div><p className="mt-1 text-xs text-sub">{r.origin} → {r.destination}</p><p className="text-xs text-sub">{fdate(r.departureAt)} · {r.passengers} pax</p></div>
+            ))}
+            {pending.length > 0 && <Btn variant="outline" size="sm" className="w-full" onClick={() => go('op-solicitacoes')}>Analisar solicitações</Btn>}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   OPERACIONAL — AGENDA
+============================================================ */
+function OpAgenda() {
+  const { db, notify } = useApp();
+  const [sel, setSel] = useState(null);
+  const [prefill, setPrefill] = useState(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const events = useMemo(() => buildEvents(db, false), [db]);
+  const icon = sel ? (sel.kind === 'manutencao' ? 'Wrench' : sel.kind === 'bloqueio' ? 'Ban' : 'Plane') : 'Plane';
+  const startTrip = (day) => { setPrefill({ depDate: toISODate(day) }); setFormOpen(true); };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Agenda" desc="Calendário de voos, manutenções e bloqueios da frota." />
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-primary-soft/50 px-3 py-2 text-xs text-primary-dark"><Icon name="Info" size={14} /> Dica: clique em um dia do calendário para agendar uma viagem já com a data da ida preenchida. O Operacional agenda direto — sem aprovação.</div>
+      <Calendar events={events} onEventClick={setSel} onDayClick={startTrip} />
+      <TripForm open={formOpen} onClose={() => setFormOpen(false)} prefill={prefill} />
+      <Modal open={!!sel} onClose={() => setSel(null)} size="max-w-md" title={sel && sel.kind === 'trip' ? 'Detalhe do voo' : (sel ? sel.title : '')}>
+        {sel && (
+          <div className="space-y-3 text-sm">
+            <DR label="Período" value={`${sel.start.getDate()}/${sel.start.getMonth() + 1} ${hhmm(sel.start)} → ${sel.end.getDate()}/${sel.end.getMonth() + 1} ${hhmm(sel.end)}`} />
+            {sel.client && <DR icon="User" label="Cliente" value={sel.client} />}
+            {sel.origin && <DR icon="MapPin" label="Trajeto" value={sel.origin + ' → ' + sel.destination} />}
+            {sel.aircraft && <DR icon="Plane" label="Aeronave" value={sel.aircraft} />}
+            {sel.subtitle && <DR label="Motivo" value={sel.subtitle} />}
+            <div className="flex items-center gap-2 pt-1"><span className="text-sub">Status:</span>{sel.status ? <TripBadge s={sel.status} /> : <Badge tone="neutral">{sel.kind === 'manutencao' ? 'Manutenção' : 'Bloqueio'}</Badge>}</div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+function DR({ icon, label, value }) { return <div className="flex items-start gap-2.5">{icon && <span className="mt-0.5 text-sub"><Icon name={icon} size={16} /></span>}<div><p className="text-xs text-sub">{label}</p><p className="font-medium">{value}</p></div></div>; }
+
+/* ============================================================
+   OPERACIONAL — SOLICITAÇÕES
+============================================================ */
+function OpSolicitacoes() {
+  const { db, actions, notify, confirm } = useApp();
+  const [q, setQ] = useState('');
+  const [prefill, setPrefill] = useState(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const pendingCount = db.requests.filter(r => r.status === 'aguardando_analise').length;
+  const filtered = db.requests.filter(r => !q || [r.code, cn(r.clientId), r.destination].join(' ').toLowerCase().includes(q.toLowerCase()));
+  const convert = (r) => { setPrefill({ clientId: r.clientId, origin: r.origin, destination: r.destination, depDate: r.departureAt.slice(0, 10), depTime: r.departureAt.slice(11, 16), retDate: r.returnAt.slice(0, 10), retTime: r.returnAt.slice(11, 16), passengers: String(r.passengers), pax: r.pax || [], notes: r.notes || '', requestId: r.id }); setFormOpen(true); };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Solicitações" desc={`${pendingCount} solicitação(ões) aguardando sua análise.`} />
+      <Card>
+        <div className="border-b border-line p-4"><SearchBox value={q} onChange={setQ} placeholder="Buscar por código, cliente ou destino" /></div>
+        {filtered.length === 0 ? <Empty icon="Inbox" title="Nenhuma solicitação" desc="Pedidos dos clientes aparecerão aqui." /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Código</TH><TH>Cliente</TH><TH>Trajeto</TH><TH>Ida</TH><TH className="text-center">Pax</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(r => (
+              <tr key={r.id} className="border-b border-line last:border-0"><TD className="font-medium">{r.code}</TD>
+                <TD><div className="flex items-center gap-2"><Avatar name={cn(r.clientId)} size="h-7 w-7 text-[10px]" /><span className="whitespace-nowrap">{cn(r.clientId)}</span></div></TD>
+                <TD className="text-sub">{r.origin} → {r.destination}</TD><TD className="whitespace-nowrap">{fdatetime(r.departureAt)}</TD><TD className="text-center">{r.passengers}</TD><TD><ReqBadge s={r.status} /></TD>
+                <TD><Menu items={[
+                  { label: 'Ver detalhes', icon: 'Eye', onClick: () => setDetail(r) },
+                  { label: 'Marcar em análise', icon: 'ClipboardCheck', hidden: r.status !== 'aguardando_analise', onClick: () => { actions.setRequestStatus(r.id, 'em_analise'); notify('info', 'Em análise', r.code); } },
+                  { label: 'Agendar viagem', icon: 'PlaneTakeoff', hidden: r.status === 'convertida' || r.status === 'recusada', onClick: () => convert(r) },
+                  { label: 'Recusar', icon: 'XCircle', danger: true, sep: true, hidden: r.status === 'convertida' || r.status === 'recusada', onClick: () => confirm({ title: 'Recusar solicitação?', desc: `${r.code} será marcada como recusada.`, danger: true, confirmLabel: 'Recusar', onConfirm: () => { actions.setRequestStatus(r.id, 'recusada'); notify('success', 'Solicitação recusada', r.code); } }) },
+                ]} /></TD></tr>
+            ))}</tbody></table></div>
+        )}
+      </Card>
+      <TripForm open={formOpen} onClose={() => setFormOpen(false)} prefill={prefill} />
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? detail.code : ''} desc="Solicitação de voo do cliente"
+        footer={detail && detail.status !== 'convertida' && detail.status !== 'recusada' ? <><Btn variant="outline" onClick={() => setDetail(null)}>Fechar</Btn><Btn onClick={() => { convert(detail); setDetail(null); }}><Icon name="PlaneTakeoff" size={16} /> Agendar viagem</Btn></> : <Btn variant="outline" onClick={() => setDetail(null)}>Fechar</Btn>}>
+        {detail && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <DR icon="User" label="Cliente" value={cn(detail.clientId)} /><DR icon="Users" label="Passageiros" value={String(detail.passengers)} />
+              <DR icon="PlaneTakeoff" label="Origem" value={detail.origin} /><DR icon="PlaneTakeoff" label="Destino" value={detail.destination} />
+              <DR icon="CalendarClock" label="Ida" value={fdatetime(detail.departureAt)} /><DR icon="CalendarClock" label="Volta" value={fdatetime(detail.returnAt)} />
+            </div>
+            {detail.notes && <div className="rounded-lg bg-soft p-3 text-sm text-sub">{detail.notes}</div>}
+            {detail.pax && detail.pax.length > 0 && (
+              <div><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Passageiros e documentos</p><PaxList pax={detail.pax} /></div>
+            )}
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+/* ============================================================
+   OPERACIONAL — VIAGENS
+============================================================ */
+function OpViagens() {
+  const { db, actions, notify, confirm } = useApp();
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('all');
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const acLabel = (id) => { if (!id) return '—'; const a = db.aircraft.find(x => x.id === id); return a ? `${a.prefix} · ${a.model}` : '—'; };
+  const filtered = db.trips.filter(t => {
+    const mq = !q || [t.code, cn(t.clientId), t.destination, t.origin].join(' ').toLowerCase().includes(q.toLowerCase());
+    return mq && (status === 'all' || t.status === status);
+  });
+  return (
+    <div className="space-y-6">
+      <PageHead title="Viagens" desc="Gerencie todas as viagens criadas para os clientes."><Btn onClick={() => { setEditing(null); setFormOpen(true); }}><Icon name="Plus" size={16} /> Nova viagem</Btn></PageHead>
+      <Card>
+        <div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row sm:items-center">
+          <SearchBox value={q} onChange={setQ} placeholder="Buscar por código, cliente ou destino" />
+          <div className="sm:ml-auto sm:w-52"><Select value={status} onChange={setStatus}><option value="all">Todos os status</option>{Object.keys(L.trip).map(s => <option key={s} value={s}>{L.trip[s]}</option>)}</Select></div>
+        </div>
+        {filtered.length === 0 ? <Empty icon="PlaneTakeoff" title="Nenhuma viagem encontrada" desc="Ajuste a busca ou crie uma nova viagem." action={<Btn onClick={() => { setEditing(null); setFormOpen(true); }}><Icon name="Plus" size={16} /> Nova viagem</Btn>} /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Código</TH><TH>Cliente</TH><TH>Trajeto</TH><TH>Ida</TH><TH>Aeronave</TH><TH>Valor</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(t => (
+              <tr key={t.id} className="border-b border-line last:border-0"><TD className="font-medium">{t.code}</TD><TD className="whitespace-nowrap">{cn(t.clientId)}</TD>
+                <TD className="text-sub">{t.origin} → {t.destination}</TD><TD className="whitespace-nowrap">{fdatetime(t.departureAt)}</TD>
+                <TD className="whitespace-nowrap text-sub">{acLabel(t.aircraftId)}</TD><TD className="whitespace-nowrap font-medium">{t.commercialValue ? money(t.commercialValue) : '—'}</TD>
+                <TD><TripBadge s={t.status} /></TD>
+                <TD><Menu items={[
+                  { label: 'Visualizar', icon: 'Eye', onClick: () => setDetail(t) },
+                  { label: 'Editar', icon: 'Pencil', hidden: t.status === 'concluida' || t.status === 'cancelada', onClick: () => { setEditing(t); setFormOpen(true); } },
+                  { label: 'Cancelar viagem', icon: 'XCircle', danger: true, sep: true, hidden: ['concluida', 'cancelada', 'recusada'].includes(t.status), onClick: () => confirm({ title: 'Cancelar viagem?', desc: `${t.code} será marcada como cancelada.`, danger: true, confirmLabel: 'Cancelar viagem', cancelLabel: 'Voltar', onConfirm: () => { actions.setTripStatus(t.id, 'cancelada'); notify('success', 'Viagem cancelada', t.code); } }) },
+                ]} /></TD></tr>
+            ))}</tbody></table></div>
+        )}
+      </Card>
+      <TripForm open={formOpen} onClose={() => setFormOpen(false)} editing={editing} />
+      <Modal open={!!detail} onClose={() => setDetail(null)} size="max-w-lg" title={detail ? detail.code : ''} desc={detail ? cn(detail.clientId) : ''}>
+        {detail && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <DR label="Origem" value={detail.origin} /><DR label="Destino" value={detail.destination} />
+              <DR label="Ida" value={fdatetime(detail.departureAt)} /><DR label="Volta" value={fdatetime(detail.returnAt)} />
+              <DR label="Passageiros" value={String(detail.passengers)} /><DR label="Aeronave" value={acLabel(detail.aircraftId)} />
+              <DR label="Distância (ida)" value={detail.distanceKm ? detail.distanceKm + ' km' : '—'} /><DR label="Tarifa interna" value={detail.internalTariff ? money(detail.internalTariff) + '/h' : '—'} />
+              <DR label="Valor comercial" value={detail.commercialValue ? money(detail.commercialValue) : '—'} />
+            </div>
+            {detail.notes && <div className="rounded-lg bg-soft p-3 text-sm text-sub">{detail.notes}</div>}
+            {detail.pax && detail.pax.length > 0 && (
+              <div><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Passageiros e documentos</p><PaxList pax={detail.pax} /></div>
+            )}
+            <div className="flex items-center gap-2"><span className="text-sm text-sub">Status:</span><TripBadge s={detail.status} /></div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+/* ============================================================
+   OPERACIONAL — AERONAVES
+============================================================ */
+function OpAeronaves() {
+  const { db, actions, notify, confirm } = useApp();
+  const [q, setQ] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const filtered = db.aircraft.filter(a => !q || [a.prefix, a.model, a.manufacturer].join(' ').toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="space-y-6">
+      <PageHead title="Aeronaves" desc="Frota de uso interno. Clientes nunca visualizam estas informações."><Btn onClick={() => { setEditing(null); setFormOpen(true); }}><Icon name="Plus" size={16} /> Nova aeronave</Btn></PageHead>
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-primary-soft/60 px-3 py-2 text-xs text-primary-dark"><Icon name="Lock" size={14} /> Área interna — prefixos, modelos e tipos são confidenciais.</div>
+      <Card>
+        <div className="border-b border-line p-4"><SearchBox value={q} onChange={setQ} placeholder="Buscar por prefixo ou modelo" /></div>
+        {filtered.length === 0 ? <Empty icon="Plane" title="Nenhuma aeronave" desc="Cadastre a primeira aeronave." /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Prefixo</TH><TH>Tipo</TH><TH>Modelo</TH><TH>Fabricante</TH><TH>Capacidade</TH><TH>Vel. cruzeiro</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(a => (
+              <tr key={a.id} className="border-b border-line last:border-0"><TD className="font-medium">{a.prefix}</TD>
+                <TD><span className="inline-flex items-center gap-1.5"><Icon name="Plane" size={14} className="text-sub" />{L.kind[a.kind]}</span></TD>
+                <TD>{a.model}</TD><TD className="text-sub">{a.manufacturer}</TD><TD>{a.capacity} pax</TD><TD className="text-sub">{a.cruiseSpeed ? a.cruiseSpeed + ' km/h' : '—'}</TD><TD><AcBadge s={a.status} /></TD>
+                <TD><Menu items={[
+                  { label: 'Editar', icon: 'Pencil', onClick: () => { setEditing(a); setFormOpen(true); } },
+                  { label: 'Remover', icon: 'Trash2', danger: true, sep: true, onClick: () => confirm({ title: 'Remover aeronave?', desc: `${a.prefix} será removida da frota.`, danger: true, confirmLabel: 'Remover', onConfirm: () => { actions.removeAircraft(a.id); notify('success', 'Aeronave removida', a.prefix); } }) },
+                ]} /></TD></tr>
+            ))}</tbody></table></div>
+        )}
+      </Card>
+      <AircraftForm open={formOpen} onClose={() => setFormOpen(false)} editing={editing} />
+    </div>
+  );
+}
+
+/* ============================================================
+   OPERACIONAL — CONFIGURAÇÕES
+============================================================ */
+function OpConfig() {
+  const { db, actions, notify } = useApp();
+  const [tab, setTab] = useState('geral');
+  const [tariffOpen, setTariffOpen] = useState(false);
+  const [editingTariff, setEditingTariff] = useState(null);
+  const [gen, setGen] = useState({ companyName: db.settings.companyName, contactEmail: db.settings.contactEmail, timezone: db.settings.timezone });
+  const [margin, setMargin] = useState(String(db.settings.marginMinutes));
+  const acInfo = (id) => db.aircraft.find(a => a.id === id);
+  const tabs = [['geral', 'Geral', 'Building2'], ['tarifas', 'Tarifas', 'Settings2'], ['margem', 'Margem entre voos', 'Clock']];
+  return (
+    <div className="space-y-6">
+      <PageHead title="Configurações" desc="Ajustes gerais, tarifas e margem entre voos." />
+      <div className="inline-flex rounded-lg bg-soft p-1">{tabs.map(([k, lbl, ic]) => <button key={k} onClick={() => setTab(k)} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium ${tab === k ? 'bg-white shadow-card' : 'text-sub'}`}><Icon name={ic} size={16} />{lbl}</button>)}</div>
+      {tab === 'geral' && (
+        <Card className="p-5">
+          <h3 className="font-semibold">Informações da empresa</h3><p className="text-sm text-sub">Dados exibidos no sistema (protótipo).</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Nome da empresa" help="Nome que aparece no sistema."><Input value={gen.companyName} onChange={e => setGen(g => ({ ...g, companyName: e.target.value }))} /></Field>
+            <Field label="E-mail de contato" help="Contato da operação."><Input value={gen.contactEmail} onChange={e => setGen(g => ({ ...g, contactEmail: e.target.value }))} /></Field>
+            <Field label="Fuso horário" help="Usado nas agendas."><Input value={gen.timezone} onChange={e => setGen(g => ({ ...g, timezone: e.target.value }))} /></Field>
+          </div>
+          <Btn className="mt-4" onClick={() => { actions.updateSettings(gen); notify('success', 'Configurações salvas'); }}><Icon name="Save" size={16} /> Salvar</Btn>
+        </Card>
+      )}
+      {tab === 'tarifas' && (
+        <Card>
+          <div className="flex items-center justify-between p-5 pb-3"><div><h3 className="font-semibold">Tarifas</h3><p className="text-sm text-sub">Valores por aeronave usados no cálculo das viagens.</p></div><Btn onClick={() => { setEditingTariff(null); setTariffOpen(true); }}><Icon name="Plus" size={16} /> Nova tarifa</Btn></div>
+          {db.tariffs.length === 0 ? <Empty icon="Settings2" title="Nenhuma tarifa" /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Aeronave</TH><TH>Tipo</TH><TH>Tarifa</TH><TH>Unidade</TH><TH>Vigência</TH><TH>Status</TH><TH></TH></tr></thead>
+              <tbody>{db.tariffs.map(t => { const a = acInfo(t.aircraftId); return (
+                <tr key={t.id} className="border-b border-line last:border-0"><TD className="font-medium">{a ? a.prefix : '—'}</TD><TD className="text-sub">{a ? L.kind[a.kind] : '—'}</TD><TD><div className="font-medium">{money(t.value)}</div>{t.costs && <div className="mt-0.5 whitespace-nowrap text-[11px] text-sub">Comb {moneyShort(t.costs.combustivel || 0)} · Voo {moneyShort(t.costs.horaVoo || 0)} · Taxas {moneyShort(t.costs.taxas || 0)} · Piloto {moneyShort(t.costs.despesaPiloto || 0)}</div>}</TD><TD className="text-sub">{L.unit[t.unit]}</TD>
+                  <TD className="whitespace-nowrap text-sub">{fdate(t.startDate)}{t.endDate ? ' – ' + fdate(t.endDate) : ''}</TD><TD><Badge tone={t.active ? 'success' : 'neutral'}>{t.active ? 'Ativa' : 'Inativa'}</Badge></TD>
+                  <TD><Menu items={[{ label: 'Editar', icon: 'Pencil', onClick: () => { setEditingTariff(t); setTariffOpen(true); } }]} /></TD></tr>
+              ); })}</tbody></table></div>
+          )}
+        </Card>
+      )}
+      {tab === 'margem' && (
+        <Card className="p-5">
+          <h3 className="font-semibold">Margem entre voos</h3><p className="text-sm text-sub">Tempo mínimo de intervalo entre dois voos da mesma aeronave (preparação, reabastecimento, tripulação).</p>
+          <div className="mt-4 max-w-xs"><Field label="Intervalo mínimo (minutos)" help="Ex: 45 minutos entre um voo e outro."><Input type="number" min="0" value={margin} onChange={e => setMargin(e.target.value)} /></Field></div>
+          <div className="mt-4 rounded-lg bg-primary-soft/60 p-3 text-sm text-primary-dark">Valor atual: <strong>{db.settings.marginMinutes} minutos</strong>. Este intervalo pode ser considerado na verificação de disponibilidade.</div>
+          <Btn className="mt-4" onClick={() => { actions.updateSettings({ marginMinutes: Number(margin) || 0 }); notify('success', 'Margem atualizada', margin + ' minutos'); }}><Icon name="Save" size={16} /> Salvar</Btn>
+        </Card>
+      )}
+      <TariffForm open={tariffOpen} onClose={() => setTariffOpen(false)} editing={editingTariff} />
+    </div>
+  );
+}
+
+/* ============================================================
+   FINANCEIRO — DASHBOARD
+============================================================ */
+function FinDashboard() {
+  const { db, go } = useApp();
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const totalReceber = db.charges.reduce((s, c) => s + balance(c), 0);
+  const recebidoMes = db.charges.flatMap(c => c.payments).filter(p => { const d = new Date(p.date); return d.getMonth() === TODAY.getMonth() && d.getFullYear() === TODAY.getFullYear(); }).reduce((s, p) => s + p.amount, 0);
+  const emAtraso = db.charges.filter(c => chStatus(c) === 'vencido').reduce((s, c) => s + balance(c), 0);
+  const limite = addDays(TODAY, 15);
+  const proximos = db.charges.filter(c => { const due = new Date(c.dueDate + 'T23:59:59'); return balance(c) > 0 && due >= TODAY && due <= limite; }).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  const open = db.charges.filter(c => balance(c) > 0).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  return (
+    <div className="space-y-6">
+      <PageHead title="Dashboard financeiro" desc="Resumo de recebíveis e situação das cobranças." />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="Total a receber" value={money(totalReceber)} icon="Wallet" hint="Saldo em aberto" />
+        <Stat label="Recebido no mês" value={money(recebidoMes)} icon="TrendingUp" tone="success" hint="Agosto/2026" />
+        <Stat label="Em atraso" value={money(emAtraso)} icon="AlertTriangle" tone="danger" hint="Vencido e não pago" />
+        <Stat label="Próx. vencimentos" value={proximos.length} icon="CalendarClock" tone="warning" hint="Próximos 15 dias" />
+      </div>
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <div className="flex items-center justify-between p-5 pb-3"><div><h3 className="font-semibold">Cobranças em aberto</h3><p className="text-sm text-sub">Ordenadas por vencimento</p></div><Btn variant="ghost" size="sm" onClick={() => go('fin-financeiro')}>Ver tudo <Icon name="ArrowRight" size={16} /></Btn></div>
+          {open.length === 0 ? <Empty icon="Banknote" title="Nada em aberto" /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Cliente</TH><TH>Cobrança</TH><TH>Saldo</TH><TH>Vencimento</TH><TH>Status</TH></tr></thead>
+              <tbody>{open.slice(0, 6).map(c => (<tr key={c.id} className="border-b border-line last:border-0"><TD className="whitespace-nowrap font-medium">{cn(c.clientId)}</TD><TD className="text-sub">{c.code}</TD><TD className="font-medium">{money(balance(c))}</TD><TD className="whitespace-nowrap">{fdate(c.dueDate)}</TD><TD><PayBadge s={chStatus(c)} /></TD></tr>))}</tbody></table></div>
+          )}
+        </Card>
+        <Card>
+          <div className="p-5 pb-3"><h3 className="font-semibold">Próximos vencimentos</h3><p className="text-sm text-sub">Nos próximos 15 dias</p></div>
+          <div className="space-y-2 px-5 pb-5">{proximos.length === 0 ? <Empty icon="CalendarClock" title="Sem vencimentos" /> : proximos.map(c => (
+            <div key={c.id} className="flex items-center justify-between rounded-lg border border-line p-3"><div><p className="text-sm font-medium">{cn(c.clientId)}</p><p className="text-xs text-sub">Vence {fdate(c.dueDate)}</p></div><p className="text-sm font-semibold">{money(balance(c))}</p></div>
+          ))}</div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   FINANCEIRO — RECEBÍVEIS + BAIXA
+============================================================ */
+function FinFinanceiro() {
+  const { db, actions, notify, confirm } = useApp();
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('all');
+  const [payOpen, setPayOpen] = useState(false);
+  const [payFor, setPayFor] = useState(null);
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const tc = (id) => { if (!id) return '—'; const t = db.trips.find(x => x.id === id); return t ? t.code : '—'; };
+  const filtered = db.charges.filter(c => { const mq = !q || [c.code, cn(c.clientId)].join(' ').toLowerCase().includes(q.toLowerCase()); return mq && (status === 'all' || chStatus(c) === status); });
+  const totalReceber = db.charges.reduce((s, c) => s + balance(c), 0);
+  const totalPago = db.charges.reduce((s, c) => s + paid(c), 0);
+  const emAtraso = db.charges.filter(c => chStatus(c) === 'vencido').reduce((s, c) => s + balance(c), 0);
+  const darBaixa = (c) => { actions.addPayment(c.id, { amount: balance(c), date: '2026-08-11', method: 'transferencia', note: 'Baixa manual (quitação total)' }); notify('success', 'Baixa registrada', c.code + ' quitada.'); };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Financeiro" desc="Recebíveis, saldos e status de cada cobrança."><Btn onClick={() => { setPayFor(null); setPayOpen(true); }}><Icon name="Banknote" size={16} /> Registrar pagamento</Btn></PageHead>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat label="Total a receber" value={money(totalReceber)} icon="Wallet" />
+        <Stat label="Total recebido" value={money(totalPago)} icon="CheckCircle2" tone="success" />
+        <Stat label="Em atraso" value={money(emAtraso)} icon="ReceiptText" tone="danger" />
+      </div>
+      <Card>
+        <div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row sm:items-center">
+          <SearchBox value={q} onChange={setQ} placeholder="Buscar por cliente ou código" />
+          <div className="sm:ml-auto sm:w-48"><Select value={status} onChange={setStatus}><option value="all">Todos os status</option>{Object.keys(L.pay).map(s => <option key={s} value={s}>{L.pay[s]}</option>)}</Select></div>
+        </div>
+        {filtered.length === 0 ? <Empty icon="Wallet" title="Nenhuma cobrança" /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Cliente</TH><TH>Viagem</TH><TH>Valor</TH><TH>Pago</TH><TH>Saldo</TH><TH>Vencimento</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(c => { const bal = balance(c); return (
+              <tr key={c.id} className="border-b border-line last:border-0"><TD className="whitespace-nowrap font-medium">{cn(c.clientId)}</TD><TD className="text-sub">{tc(c.tripId)}</TD>
+                <TD>{money(c.total)}</TD><TD className="text-success">{money(paid(c))}</TD><TD className="font-medium">{money(bal)}</TD><TD className="whitespace-nowrap">{fdate(c.dueDate)}</TD><TD><PayBadge s={chStatus(c)} /></TD>
+                <TD><Menu items={[
+                  { label: 'Registrar pagamento', icon: 'Banknote', hidden: bal <= 0, onClick: () => { setPayFor(c.id); setPayOpen(true); } },
+                  { label: 'Dar baixa (quitar)', icon: 'CheckCircle2', hidden: bal <= 0, onClick: () => confirm({ title: 'Dar baixa na cobrança?', desc: `${c.code} será quitada por completo (${money(bal)}).`, confirmLabel: 'Confirmar baixa', onConfirm: () => darBaixa(c) }) },
+                ]} /></TD></tr>
+            ); })}</tbody></table></div>
+        )}
+      </Card>
+      <PaymentForm open={payOpen} onClose={() => setPayOpen(false)} presetChargeId={payFor} />
+    </div>
+  );
+}
+
+/* ============================================================
+   FINANCEIRO — COBRANÇAS
+============================================================ */
+function FinCobrancas() {
+  const { db } = useApp();
+  const [q, setQ] = useState('');
+  const [chargeOpen, setChargeOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [payFor, setPayFor] = useState(null);
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const tc = (id) => { if (!id) return '—'; const t = db.trips.find(x => x.id === id); return t ? t.code : '—'; };
+  const filtered = db.charges.filter(c => !q || [c.code, cn(c.clientId)].join(' ').toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="space-y-6">
+      <PageHead title="Cobranças" desc="Crie e acompanhe as cobranças emitidas."><Btn onClick={() => setChargeOpen(true)}><Icon name="Plus" size={16} /> Nova cobrança</Btn></PageHead>
+      <Card>
+        <div className="border-b border-line p-4"><SearchBox value={q} onChange={setQ} placeholder="Buscar por cliente ou código" /></div>
+        {filtered.length === 0 ? <Empty icon="ReceiptText" title="Nenhuma cobrança" desc="Crie a primeira cobrança." action={<Btn onClick={() => setChargeOpen(true)}><Icon name="Plus" size={16} /> Nova cobrança</Btn>} /> : (
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Código</TH><TH>Cliente</TH><TH>Viagem</TH><TH>Valor</TH><TH>Saldo</TH><TH>Vencimento</TH><TH>Status</TH><TH></TH></tr></thead>
+            <tbody>{filtered.map(c => { const bal = balance(c); return (
+              <tr key={c.id} className="border-b border-line last:border-0"><TD className="font-medium">{c.code}</TD><TD className="whitespace-nowrap">{cn(c.clientId)}</TD><TD className="text-sub">{tc(c.tripId)}</TD><TD>{money(c.total)}</TD><TD className="font-medium">{money(bal)}</TD><TD className="whitespace-nowrap">{fdate(c.dueDate)}</TD><TD><PayBadge s={chStatus(c)} /></TD>
+                <TD><Menu items={[{ label: 'Registrar pagamento', icon: 'Banknote', hidden: bal <= 0, onClick: () => { setPayFor(c.id); setPayOpen(true); } }]} /></TD></tr>
+            ); })}</tbody></table></div>
+        )}
+      </Card>
+      <ChargeForm open={chargeOpen} onClose={() => setChargeOpen(false)} />
+      <PaymentForm open={payOpen} onClose={() => setPayOpen(false)} presetChargeId={payFor} />
+    </div>
+  );
+}
+
+/* ============================================================
+   FINANCEIRO — PAGAMENTOS
+============================================================ */
+function FinPagamentos() {
+  const { db, actions, notify, confirm } = useApp();
+  const [payOpen, setPayOpen] = useState(false);
+  const cn = (id) => { const c = db.clients.find(x => x.id === id); return c ? c.name : '—'; };
+  const payments = db.charges.flatMap(c => c.payments.map(p => ({ ...p, chargeCode: c.code, clientName: cn(c.clientId) }))).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const open = db.charges.filter(c => balance(c) > 0).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  const darBaixa = (c) => { actions.addPayment(c.id, { amount: balance(c), date: '2026-08-11', method: 'transferencia', note: 'Baixa manual (quitação total)' }); notify('success', 'Baixa registrada', c.code + ' quitada.'); };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Pagamentos" desc="Registre pagamentos e dê baixa em cobranças em aberto."><Btn onClick={() => setPayOpen(true)}><Icon name="Banknote" size={16} /> Registrar pagamento</Btn></PageHead>
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <div className="p-5 pb-3"><h3 className="flex items-center gap-2 font-semibold"><Icon name="History" size={16} className="text-sub" /> Histórico de pagamentos</h3><p className="text-sm text-sub">Recebimentos já registrados</p></div>
+          {payments.length === 0 ? <Empty icon="Banknote" title="Nenhum pagamento" /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-line"><TH>Data</TH><TH>Cliente</TH><TH>Cobrança</TH><TH>Forma</TH><TH>Valor</TH></tr></thead>
+              <tbody>{payments.map(p => (<tr key={p.id} className="border-b border-line last:border-0"><TD className="whitespace-nowrap">{fdate(p.date)}</TD><TD className="whitespace-nowrap font-medium">{p.clientName}</TD><TD className="text-sub">{p.chargeCode}</TD><TD><Badge tone="neutral">{L.method[p.method]}</Badge></TD><TD className="font-medium text-success">{money(p.amount)}</TD></tr>))}</tbody></table></div>
+          )}
+        </Card>
+        <Card>
+          <div className="p-5 pb-3"><h3 className="font-semibold">Cobranças em aberto</h3><p className="text-sm text-sub">Dê baixa com um clique</p></div>
+          <div className="space-y-2 px-5 pb-5">{open.length === 0 ? <Empty icon="CheckCircle2" title="Tudo quitado" /> : open.map(c => (
+            <div key={c.id} className="rounded-lg border border-line p-3">
+              <div className="flex items-center justify-between"><span className="text-sm font-medium">{cn(c.clientId)}</span><PayBadge s={chStatus(c)} /></div>
+              <div className="mt-1 flex items-center justify-between"><span className="text-xs text-sub">{c.code} · vence {fdate(c.dueDate)}</span><span className="text-sm font-semibold">{money(balance(c))}</span></div>
+              <Btn variant="outline" size="sm" className="mt-2 w-full" onClick={() => confirm({ title: 'Dar baixa na cobrança?', desc: `${c.code} será quitada por completo (${money(balance(c))}).`, confirmLabel: 'Confirmar baixa', onConfirm: () => darBaixa(c) })}><Icon name="CheckCircle2" size={16} /> Dar baixa</Btn>
+            </div>
+          ))}</div>
+        </Card>
+      </div>
+      <PaymentForm open={payOpen} onClose={() => setPayOpen(false)} />
+    </div>
+  );
+}
+
+/* ============================================================
+   FINANCEIRO — RELATÓRIOS (gráficos simples em CSS)
+============================================================ */
+function FinRelatorios() {
+  const { db } = useApp();
+  const totalFat = db.charges.reduce((s, c) => s + c.total, 0);
+  const totalRec = db.charges.reduce((s, c) => s + paid(c), 0);
+  const inad = db.clients.filter(c => clientBalance(c.id, db.charges) > 0).length;
+  const monthly = useMemo(() => {
+    const map = {};
+    db.charges.forEach(c => c.payments.forEach(p => { const d = new Date(p.date); const k = d.getFullYear() * 12 + d.getMonth(); map[k] = (map[k] || 0) + p.amount; }));
+    const abbr = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    return Object.keys(map).map(Number).sort((a, b) => a - b).map(k => ({ mes: abbr[k % 12], valor: map[k] }));
+  }, [db]);
+  const byStatus = useMemo(() => {
+    const m = { pago: 0, parcial: 0, pendente: 0, vencido: 0 };
+    db.charges.forEach(c => m[chStatus(c)]++);
+    return Object.keys(m).filter(k => m[k] > 0).map(k => ({ name: k, value: m[k] }));
+  }, [db]);
+  const top = useMemo(() => db.clients.map(c => ({ name: c.name.split(' ')[0], saldo: clientBalance(c.id, db.charges) })).filter(c => c.saldo > 0).sort((a, b) => b.saldo - a.saldo).slice(0, 5), [db]);
+  const maxMonthly = Math.max(1, ...monthly.map(m => m.valor));
+  const maxTop = Math.max(1, ...top.map(t => t.saldo));
+  const totalStatus = byStatus.reduce((s, x) => s + x.value, 0);
+  const STCOL = { pago: 'bg-success', parcial: 'bg-primary', pendente: 'bg-warning', vencido: 'bg-danger' };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Relatórios" desc="Indicadores e gráficos da operação financeira." />
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat label="Total faturado" value={money(totalFat)} icon="BarChart3" />
+        <Stat label="Total recebido" value={money(totalRec)} icon="TrendingUp" tone="success" />
+        <Stat label="Clientes inadimplentes" value={inad} icon="Users" tone="danger" />
+      </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="p-5">
+          <h3 className="font-semibold">Recebimentos por mês</h3><p className="text-sm text-sub">Valores efetivamente recebidos</p>
+          <div className="mt-6 flex h-52 items-end gap-6 border-b border-line pb-0">{monthly.map(m => (
+            <div key={m.mes} className="flex flex-1 flex-col items-center gap-2">
+              <span className="text-xs font-medium text-sub">{moneyShort(m.valor)}</span>
+              <div className="w-full max-w-[64px] rounded-t-lg bg-primary" style={{ height: `${Math.max(6, (m.valor / maxMonthly) * 160)}px` }} />
+              <span className="text-xs text-sub">{m.mes}</span>
+            </div>
+          ))}</div>
+        </Card>
+        <Card className="p-5">
+          <h3 className="flex items-center gap-2 font-semibold"><Icon name="PieChart" size={16} className="text-sub" /> Cobranças por status</h3><p className="text-sm text-sub">Distribuição atual</p>
+          <div className="mt-4 space-y-3">{byStatus.map(s => (
+            <div key={s.name}>
+              <div className="mb-1 flex items-center justify-between text-sm"><span className="capitalize">{L.pay[s.name]}</span><span className="font-medium">{s.value}</span></div>
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-soft"><div className={`h-full rounded-full ${STCOL[s.name]}`} style={{ width: `${(s.value / totalStatus) * 100}%` }} /></div>
+            </div>
+          ))}</div>
+        </Card>
+        <Card className="p-5 lg:col-span-2">
+          <h3 className="font-semibold">Maiores saldos em aberto</h3><p className="text-sm text-sub">Top 5 clientes por valor pendente</p>
+          <div className="mt-4 space-y-3">{top.map(t => (
+            <div key={t.name} className="flex items-center gap-3">
+              <span className="w-24 shrink-0 text-sm">{t.name}</span>
+              <div className="h-6 flex-1 overflow-hidden rounded-md bg-soft"><div className="flex h-full items-center justify-end rounded-md bg-primary px-2 text-[11px] font-medium text-white" style={{ width: `${Math.max(12, (t.saldo / maxTop) * 100)}%` }}>{moneyShort(t.saldo)}</div></div>
+            </div>
+          ))}</div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — INÍCIO
+============================================================ */
+function CliInicio() {
+  const { db, go } = useApp();
+  const id = db.currentClientId;
+  const client = db.clients.find(c => c.id === id);
+  const mine = db.trips.filter(t => t.clientId === id);
+  const upcoming = mine.filter(t => isFuture(t.departureAt) && t.status !== 'recusada' && t.status !== 'cancelada').sort((a, b) => new Date(a.departureAt) - new Date(b.departureAt));
+  const emAnalise = db.requests.filter(r => r.clientId === id && (r.status === 'aguardando_analise' || r.status === 'em_analise'));
+  const bal = clientBalance(id, db.charges);
+  const pending = clientFin(id, db.charges) !== 'em_dia';
+  return (
+    <div className="space-y-6">
+      <PageHead title={`Olá, ${client ? client.name.split(' ')[0] : 'cliente'} 👋`} desc="Bem-vindo ao seu painel de voos executivos."><Btn onClick={() => go('cli-solicitar')}><Icon name="Send" size={16} /> Solicitar voo</Btn></PageHead>
+      {pending && (
+        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning-soft p-4"><span className="text-warning"><Icon name="AlertTriangle" size={20} /></span>
+          <div className="flex-1"><p className="text-sm font-semibold">Você possui pagamentos pendentes</p><p className="mt-0.5 text-sm text-sub">Regularize sua situação para agilizar novas solicitações.</p></div>
+          <Btn variant="outline" size="sm" onClick={() => go('cli-financeiro')}>Ver financeiro</Btn>
+        </div>
+      )}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat label="Próximos voos" value={upcoming.length} icon="PlaneTakeoff" />
+        <Stat label="Solicitações em análise" value={emAnalise.length} icon="Inbox" tone="warning" hint="Aguardando a operação" />
+        <Stat label="Saldo em aberto" value={money(bal)} icon="Wallet" tone={bal > 0 ? 'danger' : 'success'} />
+      </div>
+      <Card>
+        <div className="flex items-center justify-between p-5 pb-3"><div><h3 className="font-semibold">Seus próximos voos</h3><p className="text-sm text-sub">Suas viagens agendadas</p></div><Btn variant="ghost" size="sm" onClick={() => go('cli-viagens')}>Ver todas <Icon name="ArrowRight" size={16} /></Btn></div>
+        <div className="space-y-3 px-5 pb-5">{upcoming.length === 0 ? <Empty icon="CalendarClock" title="Nenhum voo agendado" desc="Que tal solicitar um novo voo?" action={<Btn onClick={() => go('cli-solicitar')}><Icon name="Send" size={16} /> Solicitar voo</Btn>} /> : upcoming.map(t => (
+          <div key={t.id} className="flex flex-col gap-2 rounded-lg border border-line p-4 sm:flex-row sm:items-center"><div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon name="PlaneTakeoff" size={20} /></div>
+            <div className="flex-1"><p className="text-sm font-medium">{t.origin} → {t.destination}</p><p className="text-xs text-sub">{fdatetime(t.departureAt)} · {t.passengers} passageiro{t.passengers > 1 ? 's' : ''}</p></div><TripBadge s={t.status} /></div>
+        ))}</div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — SOLICITAR VOO
+============================================================ */
+function CliSolicitar() {
+  const { db, actions, notify, pendingDep, setPendingDep } = useApp();
+  const id = db.currentClientId;
+  const blank = { origin: '', destination: '', depDate: '', depTime: '', retDate: '', retTime: '', notes: '' };
+  const [f, setF] = useState(() => pendingDep ? { ...blank, depDate: pendingDep } : blank);
+  const [pax, setPax] = useState([newPax()]);
+  const [sent, setSent] = useState(false);
+  const [alertOpen, setAlertOpen] = useState(false);
+  const pending = clientFin(id, db.charges) !== 'em_dia';
+  // Data escolhida no calendário de Disponibilidade → preenche a Data de embarque uma vez.
+  useEffect(() => { if (pendingDep) { setF(s => ({ ...s, depDate: pendingDep })); setPendingDep(null); } }, []);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const routeOk = f.origin && f.destination && f.depDate && f.depTime && f.retDate && f.retTime;
+  const paxOk = pax.length > 0 && pax.every(p => p.name.trim() && p.doc);
+  const valid = routeOk && paxOk;
+  const attempt = () => {
+    if (!routeOk) return notify('error', 'Preencha os campos', 'Informe origem, destino e as datas de ida e volta.');
+    if (f.depDate < toISODate(TODAY)) return notify('error', 'Data no passado', 'A data de embarque não pode ser anterior a hoje.');
+    if (combine(f.retDate, f.retTime) <= combine(f.depDate, f.depTime)) return notify('error', 'Datas inválidas', 'A volta precisa ser depois da ida.');
+    if (!paxOk) return notify('error', 'Complete os passageiros', 'Informe o nome e envie a foto do documento de cada passageiro.');
+    if (pending) setAlertOpen(true); else doSubmit();
+  };
+  const doSubmit = () => { actions.addRequest({ clientId: id, origin: f.origin, destination: f.destination, departureAt: combine(f.depDate, f.depTime), returnAt: combine(f.retDate, f.retTime), passengers: pax.length, pax, notes: f.notes }); setAlertOpen(false); setSent(true); };
+  if (sent) return (
+    <div className="mx-auto max-w-2xl"><Card className="text-center">
+      <div className="flex flex-col items-center py-12">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-success-soft text-success"><Icon name="CheckCircle2" size={32} /></div>
+        <h2 className="mt-5 text-xl font-semibold">Solicitação enviada com sucesso</h2>
+        <p className="mt-2 max-w-sm text-sm text-sub">Recebemos o seu pedido e os documentos dos passageiros. Nossa equipe irá analisar a disponibilidade e retornar em breve.</p>
+        <div className="mt-4"><Badge tone="warning" dot>Aguardando análise</Badge></div>
+        <div className="mt-6"><Btn variant="outline" onClick={() => { setF(blank); setPax([newPax()]); setSent(false); }}>Nova solicitação</Btn></div>
+      </div>
+    </Card></div>
+  );
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <PageHead title="Solicitar voo" desc="Preencha os dados da sua viagem. É rápido e simples." />
+      <Card className="p-5">
+        <h3 className="flex items-center gap-2 font-semibold"><Icon name="Plane" size={16} className="text-primary" /> Detalhes da viagem</h3><p className="text-sm text-sub">A nossa equipe escolhe a melhor aeronave para você.</p>
+        <div className="mt-6 space-y-6">
+          <div><p className="mb-3 text-sm font-semibold">Ida</p><div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Origem" required help="De onde você quer partir."><Input value={f.origin} onChange={e => set('origin', e.target.value)} placeholder="Ex: São Paulo (CGH)" /></Field>
+            <Field label="Destino" required help="Para onde você quer ir."><Input value={f.destination} onChange={e => set('destination', e.target.value)} placeholder="Ex: Rio de Janeiro (SDU)" /></Field>
+            <Field label="Data do embarque" required help="Dia da ida."><Input type="date" min={toISODate(TODAY)} value={f.depDate} onChange={e => set('depDate', e.target.value)} /></Field>
+            <Field label="Hora do embarque" required help="Horário da ida."><Input type="time" value={f.depTime} onChange={e => set('depTime', e.target.value)} /></Field>
+          </div></div>
+          <div><p className="mb-3 text-sm font-semibold">Volta</p><div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Data da volta" required help="Dia do retorno."><Input type="date" min={f.depDate || toISODate(TODAY)} value={f.retDate} onChange={e => set('retDate', e.target.value)} /></Field>
+            <Field label="Hora da volta" required help="Horário do retorno."><Input type="time" value={f.retTime} onChange={e => set('retTime', e.target.value)} /></Field>
+          </div></div>
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-sm font-semibold">Passageiros</p>
+              <span className="text-xs text-sub">{pax.length} passageiro{pax.length > 1 ? 's' : ''}</span>
+            </div>
+            <p className="mb-3 text-xs text-sub">Informe o nome completo e a foto do documento com foto de cada passageiro (RG, CNH ou passaporte).</p>
+            <PassengersEditor value={pax} onChange={setPax} />
+          </div>
+          <Field label="Observações" help="Alguma preferência ou informação importante?"><Textarea value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Ex: preciso retornar no mesmo dia..." /></Field>
+          <div className="flex items-center gap-2 rounded-lg bg-primary-soft/60 p-3 text-xs text-primary-dark"><Icon name="Info" size={16} /> Você não escolhe a aeronave — nossa equipe seleciona a melhor opção e envia a viagem para o seu aceite.</div>
+          <Btn size="lg" className="w-full" onClick={attempt}><Icon name="Send" size={16} /> Solicitar voo</Btn>
+        </div>
+      </Card>
+      <Modal open={alertOpen} onClose={() => setAlertOpen(false)} size="max-w-md" footer={<><Btn variant="outline" onClick={() => setAlertOpen(false)}>Voltar</Btn><Btn onClick={doSubmit}>Continuar mesmo assim</Btn></>}>
+        <div className="flex items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-warning-soft text-warning"><Icon name="AlertTriangle" size={20} /></div>
+          <div><h3 className="text-lg font-semibold">Atenção</h3><p className="mt-1.5 text-sm text-sub">Existem pagamentos pendentes em sua conta. Sua solicitação poderá depender da regularização financeira.</p></div></div>
+      </Modal>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — DISPONIBILIDADE (mascarada)
+============================================================ */
+function CliDisp() {
+  const { db, go, setPendingDep } = useApp();
+  const [cursor, setCursor] = useState(TODAY);
+  const todayD = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate());
+  const pick = (day, st, inMonth, isPast) => { if (!inMonth || isPast || st !== 'disponivel') return; setPendingDep(toISODate(day)); go('cli-solicitar'); };
+  const tripsActive = db.trips.filter(t => t.status !== 'recusada' && t.status !== 'cancelada');
+  const coversRange = (startISO, endISO, d) => {
+    const s0 = new Date(startISO), e0 = new Date(endISO);
+    const s = new Date(s0.getFullYear(), s0.getMonth(), s0.getDate());
+    const e = new Date(e0.getFullYear(), e0.getMonth(), e0.getDate());
+    return d >= s && d <= e;
+  };
+  // Disponível se ao menos uma aeronave da frota estiver livre no dia (sem revelar detalhes).
+  const dayStatus = (day) => {
+    const d = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+    let free = 0, anyTrip = false;
+    for (const a of db.aircraft) {
+      const hasTrip = tripsActive.some(t => t.aircraftId === a.id && coversRange(t.departureAt, t.returnAt, d));
+      const hasBlock = db.blocks.some(b => b.aircraftId === a.id && coversRange(b.startAt, b.endAt, d));
+      if (hasTrip) anyTrip = true;
+      if (!hasTrip && !hasBlock) free++;
+    }
+    if (free > 0) return 'disponivel';
+    return anyTrip ? 'ocupado' : 'indisponivel';
+  };
+  const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const gridStart = addDays(first, -first.getDay());
+  const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  const stCls = { disponivel: 'bg-success-soft text-success border-success/20', ocupado: 'bg-warning-soft text-[#9A6A10] border-warning/25', indisponivel: 'bg-slate-100 text-slate-500 border-slate-200' };
+  const stLbl = { disponivel: 'Disponível', ocupado: 'Ocupado', indisponivel: 'Indisponível' };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Disponibilidade" desc="Veja os melhores dias para solicitar o seu voo."><Btn onClick={() => go('cli-solicitar')}>Solicitar voo</Btn></PageHead>
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-primary-soft/60 px-3 py-2 text-xs text-primary-dark"><Icon name="Info" size={14} /> Clique em um dia <strong>disponível</strong> para solicitar um voo já com a data de embarque preenchida.</div>
+      <Card>
+        <div className="flex items-center gap-2 border-b border-line p-4">
+          <Btn variant="outline" size="icon" onClick={() => setCursor(c => addMonths(c, -1))}><Icon name="ChevronLeft" size={16} /></Btn>
+          <Btn variant="outline" size="icon" onClick={() => setCursor(c => addMonths(c, 1))}><Icon name="ChevronRight" size={16} /></Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setCursor(TODAY)}>Hoje</Btn>
+          <span className="ml-2 text-sm font-semibold capitalize">{MONTHS[cursor.getMonth()]} de {cursor.getFullYear()}</span>
+        </div>
+        <div className="p-4"><div className="grid grid-cols-7 gap-1.5">
+          {WD.map(w => <div key={w} className="py-1 text-center text-xs font-semibold uppercase text-sub">{w}</div>)}
+          {days.map((day, i) => { const st = dayStatus(day); const inMonth = day.getMonth() === cursor.getMonth(); const today = sameDay(day.toISOString(), TODAY); const isPast = new Date(day.getFullYear(), day.getMonth(), day.getDate()) < todayD; const clickable = inMonth && !isPast && st === 'disponivel'; return (
+            <div key={i} onClick={() => pick(day, st, inMonth, isPast)} title={clickable ? 'Solicitar voo nesta data' : (isPast && inMonth ? 'Data já passou' : undefined)}
+              className={`group relative flex min-h-[70px] flex-col rounded-lg border p-2 ${inMonth ? stCls[st] : 'border-transparent bg-soft/20 opacity-40'} ${isPast && inMonth ? 'opacity-45' : ''} ${clickable ? 'cursor-pointer ring-offset-1 transition-shadow hover:ring-2 hover:ring-success/50' : ''}`}>
+              <span className={`text-xs font-semibold ${today ? 'flex h-5 w-5 items-center justify-center rounded-full bg-primary text-white' : ''}`}>{day.getDate()}</span>
+              {inMonth && <span className="mt-auto text-[10px] font-medium">{isPast ? '—' : stLbl[st]}</span>}
+              {clickable && <span className="pointer-events-none absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100"><Icon name="Plus" size={12} /></span>}
+            </div>
+          ); })}
+        </div></div>
+        <div className="flex flex-wrap items-center gap-4 border-t border-line p-4 text-xs text-sub">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-success" />Disponível</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-warning" />Ocupado</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-400" />Indisponível</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — MINHAS VIAGENS
+============================================================ */
+function CliViagens() {
+  const { db, go } = useApp();
+  const id = db.currentClientId;
+  const [tab, setTab] = useState('prox');
+  const mine = db.trips.filter(t => t.clientId === id).sort((a, b) => new Date(b.departureAt) - new Date(a.departureAt));
+  const upcoming = mine.filter(t => isFuture(t.departureAt) && t.status !== 'recusada' && t.status !== 'cancelada');
+  const past = mine.filter(t => !isFuture(t.departureAt) || t.status === 'concluida');
+  const row = (t) => (
+    <Card key={t.id}><div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon name="PlaneTakeoff" size={20} /></div>
+      <div className="flex-1"><div className="flex items-center gap-2"><p className="text-sm font-semibold">{t.origin} → {t.destination}</p><span className="text-xs text-sub">{t.code}</span></div>
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-sub"><span className="inline-flex items-center gap-1"><Icon name="Calendar" size={14} /> Ida {fdatetime(t.departureAt)}</span><span className="inline-flex items-center gap-1"><Icon name="Calendar" size={14} /> Volta {fdatetime(t.returnAt)}</span><span className="inline-flex items-center gap-1"><Icon name="Users" size={14} /> {t.passengers} pax</span></div>
+      </div><TripBadge s={t.status} /></div></Card>
+  );
+  return (
+    <div className="space-y-6">
+      <PageHead title="Minhas viagens" desc="Acompanhe as suas viagens agendadas."><Btn onClick={() => go('cli-solicitar')}><Icon name="Send" size={16} /> Solicitar voo</Btn></PageHead>
+      <div className="inline-flex rounded-lg bg-soft p-1">
+        <button onClick={() => setTab('prox')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${tab === 'prox' ? 'bg-white shadow-card' : 'text-sub'}`}>Próximas ({upcoming.length})</button>
+        <button onClick={() => setTab('hist')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${tab === 'hist' ? 'bg-white shadow-card' : 'text-sub'}`}>Histórico ({past.length})</button>
+      </div>
+      {tab === 'prox' && (upcoming.length ? <div className="grid gap-3">{upcoming.map(row)}</div> : <Card><Empty icon="PlaneTakeoff" title="Nenhuma viagem futura" desc="Solicite um voo para começar." /></Card>)}
+      {tab === 'hist' && (past.length ? <div className="grid gap-3">{past.map(row)}</div> : <Card><Empty icon="PlaneTakeoff" title="Sem histórico" /></Card>)}
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — FINANCEIRO
+============================================================ */
+function CliFinanceiro() {
+  const { db } = useApp();
+  const id = db.currentClientId;
+  const mine = db.charges.filter(c => c.clientId === id).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  const bal = clientBalance(id, db.charges);
+  const totalPago = mine.reduce((s, c) => s + paid(c), 0);
+  const vencido = mine.filter(c => chStatus(c) === 'vencido').reduce((s, c) => s + balance(c), 0);
+  const tl = (tid) => { if (!tid) return null; const t = db.trips.find(x => x.id === tid); return t ? t.origin + ' → ' + t.destination : null; };
+  return (
+    <div className="space-y-6">
+      <PageHead title="Financeiro" desc="Acompanhe seus pagamentos e valores em aberto." />
+      {bal > 0 && <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning-soft p-4"><span className="text-warning"><Icon name="AlertTriangle" size={20} /></span><div><p className="text-sm font-semibold">Você tem {money(bal)} em aberto</p><p className="mt-0.5 text-sm text-sub">Mantenha os pagamentos em dia para agilizar novas viagens.</p></div></div>}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat label="Saldo em aberto" value={money(bal)} icon="Wallet" tone={bal > 0 ? 'warning' : 'success'} />
+        <Stat label="Total pago" value={money(totalPago)} icon="CheckCircle2" tone="success" />
+        <Stat label="Em atraso" value={money(vencido)} icon="ReceiptText" tone={vencido > 0 ? 'danger' : 'primary'} />
+      </div>
+      <Card>
+        <div className="p-5 pb-3"><h3 className="font-semibold">Suas cobranças</h3><p className="text-sm text-sub">Detalhes de cada valor e seu status</p></div>
+        <div className="space-y-3 px-5 pb-5">{mine.length === 0 ? <Empty icon="Wallet" title="Nenhuma cobrança" /> : mine.map(c => { const trip = tl(c.tripId); return (
+          <div key={c.id} className="rounded-lg border border-line p-4">
+            <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{c.code}</p>{trip && <p className="text-xs text-sub">{trip}</p>}<p className="mt-0.5 text-xs text-sub">Vencimento {fdate(c.dueDate)}</p></div><PayBadge s={chStatus(c)} /></div>
+            <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg bg-soft/60 p-3 text-center text-sm">
+              <div><p className="text-xs text-sub">Total</p><p className="font-semibold">{money(c.total)}</p></div>
+              <div><p className="text-xs text-sub">Pago</p><p className="font-semibold text-success">{money(paid(c))}</p></div>
+              <div><p className="text-xs text-sub">Saldo</p><p className="font-semibold">{money(balance(c))}</p></div>
+            </div>
+            {c.payments.length > 0 && <div className="mt-3"><p className="mb-1.5 text-xs font-medium text-sub">Pagamentos realizados</p><div className="flex flex-wrap gap-2">{c.payments.map(p => <Badge key={p.id} tone="neutral">{fdate(p.date)} · {money(p.amount)} · {L.method[p.method]}</Badge>)}</div></div>}
+          </div>
+        ); })}</div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENTE — MEU PERFIL
+============================================================ */
+function CliPerfil() {
+  const { db, actions, notify } = useApp();
+  const id = db.currentClientId;
+  const client = db.clients.find(c => c.id === id);
+  const [f, setF] = useState({ name: client ? client.name : '', company: client ? client.company || '' : '', email: client ? client.email : '', phone: client ? client.phone : '', document: client ? client.document : '' });
+  if (!client) return null;
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <PageHead title="Meu perfil" desc="Seus dados de cadastro e informações da conta." />
+      <Card className="flex flex-col items-center gap-4 p-6 sm:flex-row">
+        <Avatar name={client.name} size="h-16 w-16 text-lg" />
+        <div className="text-center sm:text-left"><h2 className="text-lg font-semibold">{client.name}</h2><p className="text-sm text-sub">{client.company || 'Cliente pessoa física'}</p></div>
+        <div className="flex gap-6 sm:ml-auto">
+          <div className="text-center"><p className="text-2xl font-semibold">{clientTrips(id, db.trips)}</p><p className="text-xs text-sub">Viagens</p></div>
+          <div className="text-center"><p className="mb-1 text-xs text-sub">Situação</p><FinBadge s={clientFin(id, db.charges)} /></div>
+        </div>
+      </Card>
+      <Card className="p-5">
+        <h3 className="font-semibold">Dados de contato</h3><p className="text-sm text-sub">Mantenha suas informações atualizadas.</p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="Nome" help="Seu nome completo."><Input value={f.name} onChange={e => set('name', e.target.value)} /></Field>
+          <Field label="Empresa" help="Sua empresa (opcional)."><Input value={f.company} onChange={e => set('company', e.target.value)} /></Field>
+          <Field label="E-mail" help="Seu e-mail de contato."><Input type="email" value={f.email} onChange={e => set('email', e.target.value)} /></Field>
+          <Field label="Telefone" help="Com DDD."><Input value={f.phone} onChange={e => set('phone', e.target.value)} /></Field>
+          <Field label="Documento" help="CPF ou CNPJ."><Input value={f.document} onChange={e => set('document', e.target.value)} /></Field>
+        </div>
+        <Btn className="mt-4" onClick={() => { actions.updateClient(id, f); notify('success', 'Perfil atualizado', 'Seus dados foram salvos.'); }}><Icon name="Save" size={16} /> Salvar alterações</Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   LOGIN
+============================================================ */
+function Login({ onEnter }) {
+  const [email, setEmail] = useState('operacoes@aircharter.com.br');
+  const [pw, setPw] = useState('demo1234');
+  const [loading, setLoading] = useState(false);
+  const submit = (e) => { e.preventDefault(); setLoading(true); setTimeout(onEnter, 400); };
+  return (
+    <div className="grid min-h-screen lg:grid-cols-2">
+      <div className="relative hidden overflow-hidden lg:block" style={{ background: 'radial-gradient(120% 120% at 0% 0%, #3B5E7E 0%, #24405A 60%)' }}>
+        <div className="absolute -right-16 -top-16 h-72 w-72 rounded-full bg-white/5" /><div className="absolute bottom-10 left-10 h-40 w-40 rounded-full bg-white/5" />
+        <div className="relative flex h-full flex-col justify-between p-12 text-white">
+          <div className="flex items-center gap-2.5"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15"><Icon name="Plane" size={20} /></div><span className="text-lg font-semibold tracking-tight">Air Charter Manager</span></div>
+          <div className="max-w-md"><h1 className="text-3xl font-semibold leading-tight tracking-tight">Gestão inteligente de voos executivos</h1>
+            <p className="mt-4 text-sm leading-relaxed text-white/70">Organize agendas, aeronaves, solicitações e o financeiro do seu táxi aéreo em um só lugar — com uma experiência simples e elegante.</p>
+            <div className="mt-8 flex items-center gap-2 text-xs text-white/60"><Icon name="ShieldCheck" size={16} /> Protótipo de demonstração · dados simulados</div>
+          </div>
+          <div className="text-xs text-white/40">© 2026 Air Charter Manager</div>
+        </div>
+      </div>
+      <div className="flex items-center justify-center bg-bg p-6">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 flex items-center gap-2.5 lg:hidden"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-white"><Icon name="Plane" size={20} /></div><span className="text-lg font-semibold tracking-tight">Air Charter Manager</span></div>
+          <h2 className="text-2xl font-semibold tracking-tight">Bem-vindo de volta</h2>
+          <p className="mt-1.5 text-sm text-sub">Entre para acessar o painel de operações.</p>
+          <form onSubmit={submit} className="mt-8 space-y-5">
+            <Field label="E-mail" help="Use qualquer e-mail — é só demonstração."><div className="relative"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub"><Icon name="Mail" size={16} /></span><Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="pl-9" /></div></Field>
+            <Field label="Senha" help="Não precisa de senha real neste protótipo."><div className="relative"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub"><Icon name="Lock" size={16} /></span><Input type="password" value={pw} onChange={e => setPw(e.target.value)} className="pl-9" /></div></Field>
+            <Btn type="submit" size="lg" className="w-full" disabled={loading}>{loading ? 'Entrando...' : 'Entrar'}{!loading && <Icon name="ArrowRight" size={16} />}</Btn>
+          </form>
+          <p className="mt-6 rounded-lg bg-primary-soft/60 px-3 py-2.5 text-center text-xs text-primary-dark">Dica: depois de entrar, use o seletor <strong>“Visualizar como”</strong> no topo para trocar entre Operacional, Financeiro e Cliente.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   SELETOR DE PERFIL
+============================================================ */
+function RoleSwitcher() {
+  const { db, setRole } = useApp();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => { const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
+  const rolesInfo = { operacional: ['Briefcase', 'Cria viagens, escolhe aeronaves e organiza a agenda.'], financeiro: ['Wallet', 'Cuida das cobranças e dos pagamentos.'], cliente: ['User', 'Solicita voos e acompanha suas viagens.'] };
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen(o => !o)} className="flex items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm shadow-card hover:bg-soft">
+        <Icon name="Eye" size={16} className="text-sub" /><span className="hidden text-sub sm:inline">Visualizar como:</span><span className="font-medium">{L.role[db.role]}</span><Icon name="ChevronDown" size={14} className="text-sub" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-40 mt-1 w-72 rounded-lg border border-line bg-white p-1 shadow-pop fade-in">
+          <p className="px-2.5 py-1.5 text-xs font-semibold text-sub">Trocar de perfil (demonstração)</p>
+          <div className="my-1 h-px bg-line" />
+          {['operacional', 'financeiro', 'cliente'].map(r => { const [ic, desc] = rolesInfo[r]; const active = r === db.role; return (
+            <button key={r} onClick={() => { setRole(r); setOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left hover:bg-soft">
+              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${active ? 'bg-primary text-white' : 'bg-soft text-sub'}`}><Icon name={ic} size={16} /></div>
+              <div className="flex-1"><div className="flex items-center gap-1.5"><span className="font-medium">{L.role[r]}</span>{active && <Icon name="Check" size={14} className="text-primary" />}</div><p className="text-xs text-sub">{desc}</p></div>
+            </button>
+          ); })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   SIDEBAR
+============================================================ */
+function SidebarInner({ onNavigate }) {
+  const { db, page, go } = useApp();
+  const items = NAV[db.role];
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-16 items-center gap-2.5 px-5"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-white"><Icon name="Plane" size={18} /></div><div className="leading-tight"><p className="text-sm font-semibold tracking-tight">Air Charter</p><p className="text-[11px] text-sub">Manager</p></div></div>
+      <div className="px-3"><div className="rounded-lg bg-soft/70 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-sub">Perfil {L.role[db.role]}</div></div>
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+        {items.map(it => { const active = page === it.page; return (
+          <button key={it.page} title={it.hint} onClick={() => { go(it.page); onNavigate && onNavigate(); }} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium ${active ? 'bg-primary/10 text-primary' : 'text-sub hover:bg-soft hover:text-ink'}`}>
+            <Icon name={it.icon} size={18} />{it.label}
+          </button>
+        ); })}
+      </nav>
+      <div className="border-t border-line p-4"><div className="rounded-lg bg-primary-soft/50 p-3"><p className="text-xs font-medium text-primary-dark">Protótipo navegável</p><p className="mt-1 text-[11px] leading-relaxed text-sub">Dados simulados salvos no seu navegador. Sem servidor.</p></div></div>
+    </div>
+  );
+}
+
+/* ============================================================
+   HEADER
+============================================================ */
+function Header({ onMenu, onLogout }) {
+  const { db, page } = useApp();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => { const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
+  const item = NAV[db.role].find(i => i.page === page);
+  const client = db.clients.find(c => c.id === db.currentClientId);
+  const name = db.role === 'cliente' ? (client ? client.name : 'Cliente') : db.role === 'financeiro' ? 'Equipe Financeira' : 'Equipe Operacional';
+  return (
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-line bg-bg/80 px-4 backdrop-blur-md sm:px-6">
+      <button onClick={onMenu} className="rounded-lg p-2 text-sub hover:bg-soft lg:hidden"><Icon name="Menu" size={20} /></button>
+      <p className="hidden truncate text-sm font-semibold sm:block">{item ? item.label : ''}</p>
+      <div className="ml-auto flex items-center gap-2 sm:gap-3">
+        <RoleSwitcher />
+        <button className="relative rounded-lg p-2 text-sub hover:bg-soft"><Icon name="Bell" size={18} /><span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-bg" /></button>
+        <div className="relative" ref={ref}>
+          <button onClick={() => setOpen(o => !o)} className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 hover:bg-soft"><Avatar name={name} /><span className="hidden text-sm font-medium sm:inline">{name}</span></button>
+          {open && <div className="absolute right-0 z-40 mt-1 w-52 rounded-lg border border-line bg-white p-1 shadow-pop fade-in"><p className="px-2.5 py-1.5 text-xs font-semibold text-sub">{name}</p><div className="my-1 h-px bg-line" /><button onClick={onLogout} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-danger hover:bg-danger-soft"><Icon name="LogOut" size={16} /> Sair</button></div>}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* ============================================================
+   PÁGINAS -> COMPONENTES
+============================================================ */
+function renderPage(page) {
+  switch (page) {
+    case 'op-dashboard': return <OpDashboard />;
+    case 'op-agenda': return <OpAgenda />;
+    case 'op-solicitacoes': return <OpSolicitacoes />;
+    case 'op-viagens': return <OpViagens />;
+    case 'op-clientes': return <ClientsView desc="Consulte clientes, viagens e pendências financeiras." canCreate={true} showAircraft={true} />;
+    case 'op-aeronaves': return <OpAeronaves />;
+    case 'op-config': return <OpConfig />;
+    case 'fin-dashboard': return <FinDashboard />;
+    case 'fin-financeiro': return <FinFinanceiro />;
+    case 'fin-cobrancas': return <FinCobrancas />;
+    case 'fin-pagamentos': return <FinPagamentos />;
+    case 'fin-clientes': return <ClientsView desc="Situação financeira e histórico de cada cliente." canCreate={false} showAircraft={false} />;
+    case 'fin-relatorios': return <FinRelatorios />;
+    case 'cli-inicio': return <CliInicio />;
+    case 'cli-solicitar': return <CliSolicitar />;
+    case 'cli-disp': return <CliDisp />;
+    case 'cli-viagens': return <CliViagens />;
+    case 'cli-financeiro': return <CliFinanceiro />;
+    case 'cli-perfil': return <CliPerfil />;
+    default: return <OpDashboard />;
+  }
+}
+
+/* ============================================================
+   APP
+============================================================ */
+const STORE_KEY = 'acm-html-v4';
+function loadDb() { try { const raw = localStorage.getItem(STORE_KEY); if (raw) return { ...seed(), ...JSON.parse(raw) }; } catch (e) {} return seed(); }
+
+function App() {
+  const [db, setDb] = useState(loadDb);
+  const [authed, setAuthed] = useState(false);
+  const [page, setPage] = useState(HOME[db.role]);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [toasts, setToasts] = useState([]);
+  const [confirmState, setConfirmState] = useState(null);
+  const [pendingDep, setPendingDep] = useState(null); // data pré-selecionada no calendário → Solicitar Voo
+  const counters = useRef({ trip: 2050, req: 1190, charge: 3310 });
+
+  useEffect(() => { try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); } catch (e) {} }, [db]);
+
+  const notify = (type, title, desc) => {
+    const id = uid('t-');
+    setToasts(list => [...list, { id, type, title, desc }]);
+    setTimeout(() => setToasts(list => list.filter(t => t.id !== id)), 3600);
+  };
+  const confirm = (opts) => setConfirmState(opts);
+  const go = (p) => { setPage(p); setMobileOpen(false); };
+  const setRole = (r) => { setDb(d => ({ ...d, role: r })); setPage(HOME[r]); setMobileOpen(false); };
+
+  const actions = useMemo(() => ({
+    addAircraft: (a) => setDb(d => ({ ...d, aircraft: [{ ...a, id: uid('ac-') }, ...d.aircraft] })),
+    updateAircraft: (id, p) => setDb(d => ({ ...d, aircraft: d.aircraft.map(a => a.id === id ? { ...a, ...p } : a) })),
+    removeAircraft: (id) => setDb(d => ({ ...d, aircraft: d.aircraft.filter(a => a.id !== id) })),
+    addClient: (c) => setDb(d => ({ ...d, clients: [{ ...c, id: uid('cl-') }, ...d.clients] })),
+    updateClient: (id, p) => setDb(d => ({ ...d, clients: d.clients.map(c => c.id === id ? { ...c, ...p } : c) })),
+    addRequest: (r) => setDb(d => ({ ...d, requests: [{ ...r, id: uid('rq-'), code: 'SOL-' + (counters.current.req++), status: 'aguardando_analise' }, ...d.requests] })),
+    setRequestStatus: (id, status) => setDb(d => ({ ...d, requests: d.requests.map(r => r.id === id ? { ...r, status } : r) })),
+    addTrip: (t) => { const trip = { ...t, id: uid('tr-'), code: 'VOO-' + (counters.current.trip++) }; setDb(d => ({ ...d, trips: [trip, ...d.trips] })); return trip; },
+    updateTrip: (id, p) => setDb(d => ({ ...d, trips: d.trips.map(t => t.id === id ? { ...t, ...p } : t) })),
+    setTripStatus: (id, status) => setDb(d => ({ ...d, trips: d.trips.map(t => t.id === id ? { ...t, status } : t) })),
+    addTariff: (t) => setDb(d => ({ ...d, tariffs: [{ ...t, id: uid('tf-') }, ...d.tariffs] })),
+    updateTariff: (id, p) => setDb(d => ({ ...d, tariffs: d.tariffs.map(t => t.id === id ? { ...t, ...p } : t) })),
+    addCharge: (c) => setDb(d => ({ ...d, charges: [{ ...c, id: uid('ch-'), code: 'COB-' + (counters.current.charge++), payments: [] }, ...d.charges] })),
+    addPayment: (chargeId, p) => setDb(d => ({ ...d, charges: d.charges.map(c => c.id === chargeId ? { ...c, payments: [...c.payments, { ...p, id: uid('pay-') }] } : c) })),
+    updateSettings: (p) => setDb(d => ({ ...d, settings: { ...d.settings, ...p } })),
+    resetAll: () => { localStorage.removeItem(STORE_KEY); setDb(seed()); },
+  }), []);
+
+  const ctx = { db, actions, notify, confirm, go, setRole, page, pendingDep, setPendingDep };
+
+  if (!authed) return (
+    <AppCtx.Provider value={ctx}>
+      <Login onEnter={() => { setPage(HOME[db.role]); setAuthed(true); }} />
+      <Toasts list={toasts} />
+    </AppCtx.Provider>
+  );
+
+  return (
+    <AppCtx.Provider value={ctx}>
+      <div className="flex min-h-screen bg-bg">
+        <aside className="hidden w-64 shrink-0 border-r border-line bg-white lg:block"><div className="sticky top-0 h-screen"><SidebarInner /></div></aside>
+        {/* Mobile drawer */}
+        <div className={`fixed inset-0 z-50 lg:hidden ${mobileOpen ? '' : 'pointer-events-none'}`}>
+          <div className={`absolute inset-0 bg-slate-900/40 backdrop-blur-[2px] transition-opacity ${mobileOpen ? 'opacity-100' : 'opacity-0'}`} onClick={() => setMobileOpen(false)} />
+          <div className={`absolute left-0 top-0 h-full w-72 bg-white shadow-pop transition-transform duration-300 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+            <button onClick={() => setMobileOpen(false)} className="absolute right-3 top-4 rounded-md p-1 text-sub hover:bg-soft"><Icon name="X" size={20} /></button>
+            <SidebarInner onNavigate={() => setMobileOpen(false)} />
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Header onMenu={() => setMobileOpen(true)} onLogout={() => setAuthed(false)} />
+          <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8 xl:px-10"><div className="w-full fade-in" key={page}>{renderPage(page)}</div></main>
+        </div>
+      </div>
+      <Toasts list={toasts} />
+      <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
+      <GlobalDocViewer />
+    </AppCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
