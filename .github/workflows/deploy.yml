@@ -152,9 +152,12 @@ jobs:
 
     # Environment com required reviewer: ninguém publica em produção sem
     # aprovação, e os secrets de deploy ficam fora do alcance de PR de fork.
-    environment:
-      name: production
-      url: http://${{ secrets.SERVER_HOST }}:${{ vars.PORT_FRONTEND || '1700' }}
+    #
+    # Sem `url:` de propósito. O contexto `secrets` NÃO é permitido nessa chave
+    # — usá-lo faz o workflow inteiro deixar de compilar, e o run aparece com
+    # zero jobs. Trocar por `vars` compilaria, mas variables não são mascaradas
+    # no log: num repositório público, isso publicaria o IP do servidor.
+    environment: production
 
     steps:
       - uses: actions/checkout@v4
