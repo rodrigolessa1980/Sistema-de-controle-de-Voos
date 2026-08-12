@@ -129,7 +129,7 @@ export default tseslint.config(
   // O seed e os scripts de operação reportam progresso no stdout — é a interface
   // deles. Aqui console.log é o comportamento correto, não um esquecimento.
   {
-    files: ['prisma/seed.ts', 'apps/api/src/jobs/**/*.ts'],
+    files: ['prisma/seed.ts', 'prisma/seed-demo.ts', 'apps/api/src/jobs/**/*.ts'],
     rules: { 'no-console': 'off' },
   },
 

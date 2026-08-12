@@ -33,7 +33,8 @@
     "seed": "tsx prisma/seed.ts",
     "verify": "npm run prisma:validate && npm run lint && npm run typecheck && npm run test && npm run build",
     "test:unit": "vitest run packages",
-    "test:integration": "vitest run apps/api/test"
+    "test:integration": "vitest run apps/api/test",
+    "seed:demo": "tsx prisma/seed-demo.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

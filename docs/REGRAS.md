@@ -108,6 +108,29 @@ carregado por padrão, é uma armadilha esperando alguém.
 - o banco de produção foi expurgado: 10 clientes, 4 aeronaves, 4 tarifas, 9
   viagens, 6 solicitações, 6 cobranças, 8 pagamentos e 3 usuários de teste.
 
+### A exceção: `seed:demo`
+
+Depois desta regra ficar de pé, os dados do protótipo foram recarregados a
+pedido, para dar o que ver nas telas. Isso **não** revoga a regra — muda onde
+ela é aplicada:
+
+- o `seed.ts`, que roda em toda instalação, continua estritamente estrutural;
+- os dados fictícios vivem num arquivo separado, `prisma/seed-demo.ts`, que
+  exige `--confirm` e recusa rodar se já houver cliente no banco;
+- ele não recalcula nada por conta própria: grava os fatos e chama
+  `recalculateCharge`, `refreshClientAggregates` e o job `refreshOverdueCharges`
+  — as mesmas funções da API. Um seed que reimplementa a regra financeira é um
+  segundo lugar para a regra divergir.
+
+`flightHours` das viagens fica **nulo**, de propósito. O protótipo não
+registrava, e calcular pela fórmula produziria um número que não explica o
+`estimatedValue` gravado ao lado (a divergência da [`STATUS.md`](STATUS.md) §4).
+Nulo é honesto; número inventado, não.
+
+Os documentos de identificação dos passageiros também não vieram: no protótipo
+eram um SVG de exemplo embutido, e um placeholder no lugar sugeriria que existe
+algo verificado ali.
+
 ### Como limpar de novo
 
 ```bash

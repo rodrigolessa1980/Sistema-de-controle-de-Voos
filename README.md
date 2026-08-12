@@ -75,6 +75,23 @@ A partir daí o caminho é o mesmo em desenvolvimento e em produção:
    para quem vai usar o portal do cliente;
 5. criar os usuários de operação e financeiro.
 
+### Carregar os dados do protótipo
+
+Para ver as telas com conteúdo sem cadastrar nada à mão, `npm run seed:demo`
+recarrega exatamente os registros que existiam na primeira versão — 4 aeronaves,
+10 clientes, 4 tarifas, 8 viagens, 5 solicitações, 6 cobranças com 6 pagamentos
+e 2 bloqueios de agenda:
+
+```bash
+npm run seed:demo                  # simula: mostra o que entraria
+npm run seed:demo -- --confirm     # grava
+```
+
+Recusa rodar se o banco já tiver cliente, então não há como duplicar.
+
+**São dados de demonstração.** Depois de gravados, um cliente fictício é
+indistinguível de um real — antes de operar para valer, limpe tudo.
+
 ### Limpar o banco
 
 `node scripts/purge-operational-data.mjs` mostra o que seria apagado sem tocar
@@ -98,6 +115,7 @@ permissões, configurações e o admin.
 | `npm run prisma:migrate` | Cria uma migration nova a partir do schema |
 | `npm run prisma:studio` | Abre o Prisma Studio |
 | `npm run seed` | Papéis, permissões, configurações e o admin |
+| `npm run seed:demo` | Recarrega os dados do protótipo (exige `-- --confirm`) |
 
 ---
 
