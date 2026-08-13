@@ -14,7 +14,7 @@ honesto — o que roda, o que está bloqueado e o que descobri no caminho.
 |---|---|
 | **0 · Fundação** | Monorepo npm, TypeScript strict, ESLint com zero warning, Vitest, Dockerfiles, workflows |
 | **1 · Dados** | Migration aplicada — 23 tabelas criadas. Seed **só estrutural**: papéis, permissões, configurações e o administrador |
-| **2 · Auth/RBAC** | Login, refresh rotativo, `requirePermission`, escopo por linha, DTO por perfil |
+| **2 · Auth/RBAC** | Login, autocadastro com liberação pelo admin, refresh rotativo, `requirePermission`, escopo por linha, DTO por perfil |
 | **3 · Operacional** | 6 telas · `check-availability` · cálculo de tarifa · conversão de solicitação |
 | **4 · Financeiro** | 5 telas · cobrança · pagamento · baixa · estorno · relatórios |
 | **5 · Cliente** | 6 telas · upload de documento · disponibilidade mascarada |
@@ -43,6 +43,26 @@ Não são testes com mock — são chamadas HTTP contra a API conectada ao MySQL
 | Cliente pedindo relatório financeiro | **403** |
 | Cliente pedindo o cadastro de OUTRO cliente | **403** |
 | Cliente pedindo o próprio cadastro | **200** |
+
+### Autocadastro e liberação de acesso
+
+Formulário público na tela de login (nome, e-mail e senha) + fila de liberação em
+**Configurações → Permissões**. 25 casos em `registration.test.ts`:
+
+| Verificação | Resultado |
+|---|---|
+| Cadastro pela tela de login | conta criada com `status: pendente` |
+| Login em conta pendente **com a senha certa** | **403**, nenhum token, nenhum cookie |
+| Login em conta pendente com a senha errada | **401** com a mensagem genérica |
+| E-mail já cadastrado tentando se cadastrar | **200 igual**, nada gravado, conta original intacta |
+| Operacional / Financeiro / Cliente lendo `GET /users` | **403** |
+| Operacional tentando liberar alguém como `admin` | **403** |
+| Papel fora do enum (`superadmin`) | **422** antes de qualquer escrita |
+| Admin liberando como Operacional | **200** · login passa a funcionar com as permissões do papel |
+| Liberar o mesmo cadastro duas vezes | **400** · o papel concedido não muda |
+| Liberar como Cliente sem vínculo | cria o cadastro do cliente |
+| Liberar como Cliente com e-mail de cliente existente | reaproveita o cadastro, não duplica |
+| Recusar | linha apagada, e-mail livre para novo cadastro, auditoria preservada |
 
 ### DTO por perfil
 

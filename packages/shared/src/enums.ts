@@ -49,7 +49,12 @@ export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export const BLOCK_KINDS = ['manutencao', 'bloqueio'] as const;
 export type BlockKind = (typeof BLOCK_KINDS)[number];
 
-export const USER_STATUSES = ['ativo', 'inativo', 'bloqueado'] as const;
+/**
+ * `pendente` = cadastrou-se pela tela de login e aguarda liberação do
+ * administrador. Enquanto está nesse estado, o login recusa: a senha já existe e
+ * é conferida, mas a conta não vira sessão.
+ */
+export const USER_STATUSES = ['pendente', 'ativo', 'inativo', 'bloqueado'] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 /** Chaves de `Role.key`. O RBAC é por permissão; isto é só o papel de origem. */
@@ -84,6 +89,9 @@ export const CHANGE_ENTITIES = [
   'block',
   'settings',
   'notification',
+  // Autocadastro e liberação de acesso: é o que faz a lista de pendências do
+  // administrador se atualizar sozinha, sem ele precisar recarregar a tela.
+  'user',
 ] as const;
 export type ChangeEntity = (typeof CHANGE_ENTITIES)[number];
 

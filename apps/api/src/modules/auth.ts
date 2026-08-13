@@ -1,5 +1,6 @@
 /**
- * Autenticação: login, refresh rotativo, logout, `/me`, troca de senha.
+ * Autenticação: login, autocadastro, refresh rotativo, logout, `/me`, troca de
+ * senha.
  *
  * Substitui o `Login` de fachada do protótipo (que só fazia
  * `setTimeout(onEnter, 400)`) e o seletor "Visualizar como" — o perfil agora vem
@@ -11,6 +12,8 @@ import {
   loginBodySchema,
   loginResponseSchema,
   okSchema,
+  registerBodySchema,
+  registerResponseSchema,
   resolvePermissions,
   sessionUserSchema,
   type Permission,
@@ -34,7 +37,8 @@ import {
   signAccessToken,
   verifyPassword,
 } from '../lib/auth';
-import { badRequest, unauthorized } from '../lib/errors';
+import { recordChange } from '../lib/changefeed';
+import { badRequest, forbidden, unauthorized } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireUser } from '../plugins/rbac';
 
@@ -106,7 +110,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // usuários válidos é informação que não precisa ser dada.
       const invalid = unauthorized('E-mail ou senha incorretos.');
 
-      if (user?.status !== 'ativo') throw invalid;
+      if (!user) throw invalid;
+
+      // Conta desativada ou bloqueada pelo administrador cai na mensagem
+      // genérica: quem foi desligado da empresa não precisa saber se o motivo é
+      // a senha ou o próprio acesso.
+      if (user.status === 'inativo' || user.status === 'bloqueado') throw invalid;
 
       if (isLocked(user.lockedUntil, now)) {
         throw unauthorized(
@@ -127,6 +136,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           },
         });
         throw invalid;
+      }
+
+      /**
+       * Cadastro ainda não liberado.
+       *
+       * A explicação vem DEPOIS de a senha ser conferida, e isso é deliberado:
+       * dita antes, ela contaria a quem só chutou o e-mail que existe uma conta
+       * naquele endereço. Dita aqui, quem recebe a mensagem já provou ser o dono
+       * da senha — e aí merece saber por que não entra, em vez de ficar tentando
+       * uma senha que está certa.
+       */
+      if (user.status === 'pendente') {
+        throw forbidden('Seu cadastro foi recebido e está aguardando liberação do administrador.');
       }
 
       const permissions = effectivePermissions(user);
@@ -171,6 +193,98 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         expiresIn: ACCESS_TTL_SECONDS,
         user: sessionPayload(user, permissions),
       };
+    },
+  );
+
+  // ---------------------------------------------------------------- register
+  /**
+   * Autocadastro pela tela de login.
+   *
+   * A conta nasce `pendente`: existe, tem senha, e não entra em lugar nenhum até
+   * o administrador liberar em Configurações → Permissões. É o que permite abrir
+   * um formulário público em um sistema com RBAC sem abrir o sistema.
+   *
+   * O papel gravado agora é `cliente`, o de MENOR alcance — `roleId` é
+   * obrigatório no schema e alguma coisa tem de ficar ali. Quem decide o papel de
+   * verdade é o administrador na liberação. Se algum dia esta linha vazar para um
+   * caminho que ative a conta sem passar pela aprovação, o pior que se ganha é o
+   * acesso de um cliente sem `clientId` — que o escopo por linha já trata como
+   * "não vê nada" (ver `clientScope` em plugins/rbac.ts).
+   */
+  route.post(
+    '/register',
+    {
+      schema: { body: registerBodySchema, response: { 200: registerResponseSchema } },
+      config: {
+        // Rota pública que escreve no banco: teto baixo, por IP. Sem isto, um
+        // laço simples enche a tabela de usuários e a fila do administrador.
+        rateLimit: { max: 5, timeWindow: '10 minutes' },
+      },
+    },
+    async (request) => {
+      const { name, email, password } = request.body;
+
+      const response = {
+        ok: true,
+        message: 'Cadastro enviado. Você poderá entrar assim que o administrador liberar o acesso.',
+      } as const;
+
+      const existing = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+
+      /**
+       * E-mail já cadastrado: responde exatamente o mesmo e não grava nada.
+       *
+       * Um 409 "e-mail já existe" aqui viraria um verificador público de quem tem
+       * conta no sistema — e a lista de clientes de um táxi aéreo é justamente o
+       * que não se quer confirmar para um estranho. Quem já tem conta e esqueceu
+       * disso descobre na tela de login, autenticado.
+       */
+      if (existing) return response;
+
+      const clientRole = await prisma.role.findUnique({
+        where: { key: 'cliente' },
+        select: { id: true },
+      });
+      if (!clientRole) throw badRequest('O papel "cliente" não está configurado.');
+
+      const created = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email,
+            name,
+            passwordHash: await hashPassword(password),
+            roleId: clientRole.id,
+            status: 'pendente',
+            // Senha escolhida pela própria pessoa: não há nada de provisório.
+            mustChangePassword: false,
+          },
+          select: { id: true },
+        });
+
+        // Sem `clientScopeId`: só perfis internos veem o evento. É o que faz a
+        // fila de pendências do administrador aparecer sozinha, em 10 segundos.
+        await recordChange(tx, { entity: 'user', entityId: user.id, action: 'created' }, user.id);
+
+        await tx.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'auth.register',
+            entity: 'user',
+            entityId: user.id,
+            after: { name, email, status: 'pendente' },
+            ip: request.ip,
+            userAgent: request.headers['user-agent']?.slice(0, 255) ?? null,
+          },
+        });
+
+        return user;
+      });
+
+      request.log.info({ userId: created.id }, 'novo cadastro aguardando liberação');
+      return response;
     },
   );
 

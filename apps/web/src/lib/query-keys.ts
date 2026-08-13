@@ -48,6 +48,9 @@ export const queryKeys = {
 
   notifications: ['notifications'] as const,
   settings: ['settings'] as const,
+
+  users: ['users'] as const,
+  userList: (params: unknown) => ['users', 'list', params] as const,
 } as const;
 
 /**
@@ -93,4 +96,7 @@ export const ENTITY_INVALIDATIONS: Record<ChangeEntity, readonly (readonly strin
   block: [queryKeys.blocks, ['calendar'], ['availability-days'], queryKeys.dashboardOp],
   settings: [queryKeys.settings, queryKeys.trips],
   notification: [queryKeys.notifications],
+  // Liberar um cadastro pode criar um cliente novo (papel Cliente sem vínculo),
+  // então a lista de clientes cai junto.
+  user: [queryKeys.users, queryKeys.clients],
 };

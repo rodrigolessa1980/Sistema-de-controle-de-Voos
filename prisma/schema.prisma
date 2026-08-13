@@ -104,7 +104,13 @@ enum BlockKind {
 }
 
 /// src/index.html → L.role (agora persistido como Role.key)
+///
+/// `pendente` é o estado de quem se cadastrou pela tela de login e ainda não foi
+/// liberado pelo administrador. Não é o padrão da coluna de propósito: usuário
+/// criado de dentro (seed, portal do cliente) já nasce `ativo`, e só o
+/// autocadastro grava `pendente` explicitamente.
 enum UserStatus {
+  pendente
   ativo
   inativo
   bloqueado

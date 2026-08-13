@@ -1,12 +1,18 @@
 /**
- * Login e troca de senha.
+ * Login, autocadastro e troca de senha.
  *
  * Substitui o `Login` de fachada do protótipo, que só chamava
  * `setTimeout(onEnter, 400)` e deixava a escolha de perfil para um `<select>`
  * no cabeçalho. Agora o perfil vem do banco.
+ *
+ * O cadastro fica na MESMA tela, alternado por um botão, e não em uma rota
+ * separada: é o pedido — "precisa na tela principal para se registrar" — e evita
+ * que alguém chegue em `/cadastrar` por link antigo depois de o autocadastro ser
+ * desligado. Quem se cadastra sai com a conta `pendente`; o acesso só existe
+ * depois de o administrador liberar em Configurações → Permissões.
  */
 
-import { HOME_PATH } from '@acm/shared';
+import { HOME_PATH, registerBodySchema, type RegisterResponse } from '@acm/shared';
 import { useState } from 'react';
 import type { JSX } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
@@ -15,16 +21,13 @@ import { Btn, Field, Icon, Input, Spinner } from '../components/ui';
 import { api, ApiRequestError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useFeedback } from '../lib/feedback';
+import { useFormErrors, validateBody } from '../lib/form';
+
+type Mode = 'login' | 'register';
 
 export function LoginPage(): JSX.Element {
-  const { login, user, loading } = useAuth();
-  const navigate = useNavigate();
-  const { notifyError } = useFeedback();
-
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const { user, loading } = useAuth();
+  const [mode, setMode] = useState<Mode>('login');
 
   if (loading) {
     return (
@@ -39,21 +42,6 @@ export function LoginPage(): JSX.Element {
       <Navigate to={user.mustChangePassword ? '/trocar-senha' : HOME_PATH[user.role]} replace />
     );
   }
-
-  const submit = async (event: React.FormEvent): Promise<void> => {
-    event.preventDefault();
-    setSubmitting(true);
-    try {
-      const session = await login(email.trim(), password);
-      void navigate(session.mustChangePassword ? '/trocar-senha' : HOME_PATH[session.role], {
-        replace: true,
-      });
-    } catch (error) {
-      notifyError(error, 'Não foi possível entrar.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -95,77 +83,320 @@ export function LoginPage(): JSX.Element {
             <span className="text-lg font-semibold tracking-tight">Air Charter Manager</span>
           </div>
 
-          <h2 className="text-2xl font-semibold tracking-tight">Bem-vindo de volta</h2>
-          <p className="mt-1.5 text-sm text-sub">Entre para acessar o painel.</p>
-
-          <form
-            onSubmit={(e) => {
-              void submit(e);
-            }}
-            className="mt-8 space-y-5"
-          >
-            <Field label="E-mail" required>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
-                  <Icon name="Mail" size={16} />
-                </span>
-                <Input
-                  type="email"
-                  autoComplete="username"
-                  required
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                  }}
-                  className="pl-9"
-                  placeholder="voce@empresa.com.br"
-                />
-              </div>
-            </Field>
-
-            <Field label="Senha" required>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
-                  <Icon name="Lock" size={16} />
-                </span>
-                <Input
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                  }}
-                  className="pl-9 pr-10"
-                />
-                <button
-                  type="button"
-                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-                  onClick={() => {
-                    setShowPassword((v) => !v);
-                  }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sub hover:text-ink"
-                >
-                  <Icon name={showPassword ? 'EyeOff' : 'Eye'} size={16} />
-                </button>
-              </div>
-            </Field>
-
-            <Btn type="submit" size="lg" className="w-full" disabled={submitting}>
-              {submitting ? (
-                <>
-                  <Spinner /> Entrando…
-                </>
-              ) : (
-                <>
-                  Entrar <Icon name="ArrowRight" size={16} />
-                </>
-              )}
-            </Btn>
-          </form>
+          {mode === 'login' ? (
+            <LoginForm
+              onRegister={() => {
+                setMode('register');
+              }}
+            />
+          ) : (
+            <RegisterForm
+              onBack={() => {
+                setMode('login');
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+function LoginForm({ onRegister }: { onRegister: () => void }): JSX.Element {
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const { notifyError } = useFeedback();
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      const session = await login(email.trim(), password);
+      void navigate(session.mustChangePassword ? '/trocar-senha' : HOME_PATH[session.role], {
+        replace: true,
+      });
+    } catch (error) {
+      notifyError(error, 'Não foi possível entrar.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <h2 className="text-2xl font-semibold tracking-tight">Bem-vindo de volta</h2>
+      <p className="mt-1.5 text-sm text-sub">Entre para acessar o painel.</p>
+
+      <form
+        onSubmit={(e) => {
+          void submit(e);
+        }}
+        className="mt-8 space-y-5"
+      >
+        <Field label="E-mail" required>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
+              <Icon name="Mail" size={16} />
+            </span>
+            <Input
+              type="email"
+              autoComplete="username"
+              required
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+              }}
+              className="pl-9"
+              placeholder="voce@empresa.com.br"
+            />
+          </div>
+        </Field>
+
+        <Field label="Senha" required>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
+              <Icon name="Lock" size={16} />
+            </span>
+            <Input
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+              }}
+              className="pl-9 pr-10"
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              onClick={() => {
+                setShowPassword((v) => !v);
+              }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-sub hover:text-ink"
+            >
+              <Icon name={showPassword ? 'EyeOff' : 'Eye'} size={16} />
+            </button>
+          </div>
+        </Field>
+
+        <Btn type="submit" size="lg" className="w-full" disabled={submitting}>
+          {submitting ? (
+            <>
+              <Spinner /> Entrando…
+            </>
+          ) : (
+            <>
+              Entrar <Icon name="ArrowRight" size={16} />
+            </>
+          )}
+        </Btn>
+      </form>
+
+      <div className="mt-6 border-t border-line pt-5 text-center text-sm text-sub">
+        Ainda não tem acesso?{' '}
+        <button
+          type="button"
+          onClick={onRegister}
+          className="font-medium text-primary hover:underline"
+        >
+          Criar cadastro
+        </button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Formulário de cadastro: nome, e-mail e senha.
+ *
+ * Não pede papel nem perfil — quem se cadastra não escolhe o próprio nível de
+ * acesso. A confirmação de senha existe só na tela: o contrato do backend tem um
+ * campo de senha, e comparar os dois aqui evita o cadastro com senha digitada
+ * errada, que ninguém consegue desfazer sem o administrador.
+ */
+function RegisterForm({ onBack }: { onBack: () => void }): JSX.Element {
+  const { notifyError } = useFeedback();
+  const { errors, setErrors, setServerErrors, clearAll } = useFormErrors();
+
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [confirmation, setConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+
+  const set = (field: keyof typeof form, value: string): void => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const mismatch = confirmation !== '' && form.password !== confirmation;
+
+  const submit = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault();
+
+    // Mesmo schema que a rota usa: se passar aqui, passa lá.
+    const result = validateBody(registerBodySchema, form);
+    if (!result.ok) {
+      setErrors(result.errors);
+      return;
+    }
+    if (form.password !== confirmation) {
+      setErrors({ confirmation: 'As senhas não conferem.' });
+      return;
+    }
+
+    clearAll();
+    setSubmitting(true);
+    try {
+      const response = await api.post<RegisterResponse>('/auth/register', result.data);
+      setSent(response.message);
+    } catch (error) {
+      if (error instanceof ApiRequestError) setServerErrors(error.details);
+      notifyError(error, 'Não foi possível enviar o cadastro.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (sent !== null) {
+    return (
+      <div className="text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-success-soft text-success">
+          <Icon name="CheckCircle2" size={24} />
+        </div>
+        <h2 className="mt-4 text-xl font-semibold tracking-tight">Cadastro enviado</h2>
+        <p className="mt-2 text-sm leading-relaxed text-sub">{sent}</p>
+        <Btn variant="outline" className="mt-6 w-full" onClick={onBack}>
+          <Icon name="ArrowLeft" size={16} /> Voltar para o login
+        </Btn>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <h2 className="text-2xl font-semibold tracking-tight">Criar cadastro</h2>
+      <p className="mt-1.5 text-sm text-sub">
+        Preencha seus dados. O administrador libera o acesso e você recebe o aviso para entrar.
+      </p>
+
+      <form
+        onSubmit={(e) => {
+          void submit(e);
+        }}
+        className="mt-8 space-y-5"
+      >
+        <Field label="Nome completo" required error={errors['name']}>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
+              <Icon name="User" size={16} />
+            </span>
+            <Input
+              autoComplete="name"
+              required
+              value={form.name}
+              onChange={(e) => {
+                set('name', e.target.value);
+              }}
+              className="pl-9"
+              placeholder="Seu nome"
+            />
+          </div>
+        </Field>
+
+        <Field label="E-mail" required error={errors['email']}>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
+              <Icon name="Mail" size={16} />
+            </span>
+            <Input
+              type="email"
+              autoComplete="email"
+              required
+              value={form.email}
+              onChange={(e) => {
+                set('email', e.target.value);
+              }}
+              className="pl-9"
+              placeholder="voce@empresa.com.br"
+            />
+          </div>
+        </Field>
+
+        <Field
+          label="Senha"
+          required
+          help="Mínimo de 10 caracteres, com ao menos uma letra e um número."
+          error={errors['password']}
+        >
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sub">
+              <Icon name="Lock" size={16} />
+            </span>
+            <Input
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              required
+              value={form.password}
+              onChange={(e) => {
+                set('password', e.target.value);
+              }}
+              className="pl-9 pr-10"
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              onClick={() => {
+                setShowPassword((v) => !v);
+              }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-sub hover:text-ink"
+            >
+              <Icon name={showPassword ? 'EyeOff' : 'Eye'} size={16} />
+            </button>
+          </div>
+        </Field>
+
+        <Field
+          label="Confirme a senha"
+          required
+          error={mismatch ? 'As senhas não conferem.' : errors['confirmation']}
+        >
+          <Input
+            type="password"
+            autoComplete="new-password"
+            required
+            value={confirmation}
+            onChange={(e) => {
+              setConfirmation(e.target.value);
+            }}
+          />
+        </Field>
+
+        <Btn type="submit" size="lg" className="w-full" disabled={submitting || mismatch}>
+          {submitting ? (
+            <>
+              <Spinner /> Enviando…
+            </>
+          ) : (
+            <>
+              Enviar cadastro <Icon name="ArrowRight" size={16} />
+            </>
+          )}
+        </Btn>
+      </form>
+
+      <div className="mt-6 border-t border-line pt-5 text-center text-sm text-sub">
+        Já tem acesso?{' '}
+        <button type="button" onClick={onBack} className="font-medium text-primary hover:underline">
+          Entrar
+        </button>
+      </div>
+    </>
   );
 }
 

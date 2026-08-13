@@ -259,7 +259,10 @@ export interface TestUser {
   readonly clientId: string | null;
 }
 
-const TEST_PASSWORD = 'SenhaDeTeste123';
+/** Senha de todo usuário criado por `createUser`. Exportada para os casos que
+ * precisam fazer login de novo — repetir a string em cada arquivo faria um teste
+ * quebrar em silêncio no dia em que ela mudar aqui. */
+export const TEST_PASSWORD = 'SenhaDeTeste123';
 
 /** Cria um usuário com o papel informado e devolve um access token pronto. */
 export async function createUser(

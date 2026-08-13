@@ -36,6 +36,7 @@ import { requestRoutes } from './modules/request';
 import { settingsRoutes } from './modules/settings';
 import { tariffRoutes } from './modules/tariff';
 import { tripRoutes } from './modules/trip';
+import { userRoutes } from './modules/user';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -132,6 +133,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await api.register(documentRoutes, { prefix: '/documents' });
       await api.register(notificationRoutes, { prefix: '/notifications' });
       await api.register(settingsRoutes, { prefix: '/settings' });
+      await api.register(userRoutes, { prefix: '/users' });
       await api.register(changesRoutes, { prefix: '/changes' });
     },
     { prefix: '/api' },

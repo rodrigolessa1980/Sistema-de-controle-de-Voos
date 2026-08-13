@@ -10,6 +10,8 @@ import {
   COST_FIELDS,
   KIND_LABELS,
   Money,
+  ROLE_KEYS,
+  ROLE_LABELS,
   TARIFF_UNIT_LABELS,
   createAircraftBodySchema,
   createTariffBodySchema,
@@ -26,11 +28,14 @@ import {
   toISODate,
   type Aircraft,
   type CalendarEvent,
+  type Client,
   type FlightRequest,
+  type RoleKey,
   type Settings,
   type Tariff,
   type TripInternal,
   type TripStatus,
+  type User,
 } from '@acm/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -66,8 +71,10 @@ import {
   TH,
   Toggle,
   TripBadge,
+  UserBadge,
 } from '../components/ui';
 import { api, ApiRequestError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { useFormErrors, validateBody } from '../lib/form';
 import { useFeedback } from '../lib/feedback';
 import { queryKeys } from '../lib/query-keys';
@@ -1246,24 +1253,59 @@ function AircraftForm({
 //  CONFIGURAÇÕES
 // ============================================================================
 
+type ConfigTab = 'geral' | 'tarifas' | 'margem' | 'permissoes';
+
 export function OpConfiguracoes(): JSX.Element {
-  const [tab, setTab] = useState<'geral' | 'tarifas' | 'margem'>('geral');
+  const { can } = useAuth();
+  const [tab, setTab] = useState<ConfigTab>('geral');
+
+  /**
+   * A aba Permissões só existe para quem tem `user:read` — na matriz de papéis,
+   * só o administrador. O operacional entra em Configurações (tem
+   * `settings:read`) e não pode liberar acesso de ninguém.
+   *
+   * Esconder a aba é UX: as rotas `/users/*` recusam de qualquer forma. Mas
+   * mostrar um botão que sempre dá 403 é pior que não mostrar.
+   */
+  const canManageUsers = can('user:read');
+  const pendingCount = usePendingUserCount(canManageUsers);
+
+  // Papel rebaixado com a aba aberta: volta para Geral em vez de renderizar uma
+  // tela que o servidor vai negar.
+  const active: ConfigTab = tab === 'permissoes' && !canManageUsers ? 'geral' : tab;
 
   return (
     <div className="space-y-6">
-      <PageHead title="Configurações" desc="Ajustes gerais, tarifas e margem entre voos." />
+      <PageHead
+        title="Configurações"
+        desc={
+          canManageUsers
+            ? 'Ajustes gerais, tarifas, margem entre voos e liberação de acessos.'
+            : 'Ajustes gerais, tarifas e margem entre voos.'
+        }
+      />
       <Tabs
-        value={tab}
+        value={active}
         onChange={setTab}
         tabs={[
           { key: 'geral', label: 'Geral', icon: 'Building2' },
           { key: 'tarifas', label: 'Tarifas', icon: 'Settings2' },
           { key: 'margem', label: 'Margem entre voos', icon: 'Clock' },
+          ...(canManageUsers
+            ? ([
+                {
+                  key: 'permissoes',
+                  label: pendingCount > 0 ? `Permissões (${String(pendingCount)})` : 'Permissões',
+                  icon: 'ShieldCheck',
+                },
+              ] as const)
+            : []),
         ]}
       />
-      {tab === 'geral' && <SettingsGeneral />}
-      {tab === 'tarifas' && <TariffsTab />}
-      {tab === 'margem' && <SettingsMargin />}
+      {active === 'geral' && <SettingsGeneral />}
+      {active === 'tarifas' && <TariffsTab />}
+      {active === 'margem' && <SettingsMargin />}
+      {active === 'permissoes' && <SettingsPermissions />}
     </div>
   );
 }
@@ -1406,6 +1448,305 @@ function SettingsMargin(): JSX.Element {
         <Icon name="Save" size={16} /> Salvar
       </Btn>
     </Card>
+  );
+}
+
+// ----------------------------------------------------------------- permissões
+
+interface UserPage extends Page<User> {
+  total?: number;
+}
+
+/**
+ * Quantos cadastros esperam liberação — para o número na aba.
+ *
+ * `limit: 1` porque só o `total` interessa: contar no servidor custa um
+ * `SELECT COUNT`, trazer as linhas para contar no navegador custa a lista
+ * inteira. O cache é o mesmo da aba, então abrir Permissões não refaz a busca.
+ */
+function usePendingUserCount(enabled: boolean): number {
+  const query = useQuery({
+    queryKey: queryKeys.userList({ status: 'pendente', limit: 1 }),
+    queryFn: () => api.get<UserPage>('/users', { status: 'pendente', limit: 1 }),
+    enabled,
+  });
+  return query.data?.total ?? 0;
+}
+
+/**
+ * Configurações → Permissões: a fila de quem se cadastrou e a lista de acessos.
+ *
+ * É o outro lado do formulário da tela de login. Quem se cadastra fica
+ * `pendente`, sem entrar em lugar nenhum; aqui o administrador escolhe o papel e
+ * libera — ou recusa, e o cadastro é apagado, liberando o e-mail para uma nova
+ * tentativa.
+ */
+function SettingsPermissions(): JSX.Element {
+  const queryClient = useQueryClient();
+  const { notify, notifyError, confirm } = useFeedback();
+
+  const pending = useQuery({
+    queryKey: queryKeys.userList({ status: 'pendente' }),
+    queryFn: () => api.get<UserPage>('/users', { status: 'pendente', limit: 100 }),
+  });
+
+  const everyone = useQuery({
+    queryKey: queryKeys.userList({ all: true }),
+    queryFn: () => api.get<UserPage>('/users', { limit: 100 }),
+  });
+
+  /** Papel escolhido por linha, antes de liberar. Sem escolha = `cliente`. */
+  const [roles, setRoles] = useState<Record<string, RoleKey>>({});
+  /** Cliente escolhido por linha. `''` = criar um cadastro novo. */
+  const [links, setLinks] = useState<Record<string, string>>({});
+
+  const chosenRole = (id: string): RoleKey => roles[id] ?? 'cliente';
+
+  // A lista de clientes só é buscada quando alguma linha está sendo liberada
+  // como `cliente` — é o único caso em que o vínculo aparece na tela.
+  const needsClients = (pending.data?.items ?? []).some(
+    (item) => chosenRole(item.id) === 'cliente',
+  );
+  const clients = useQuery({
+    queryKey: queryKeys.clientList({ forApproval: true }),
+    queryFn: () => api.get<Page<Client>>('/clients', { limit: 100 }),
+    enabled: needsClients,
+  });
+
+  const invalidate = (): void => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.users });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.clients });
+  };
+
+  const approve = useMutation({
+    mutationFn: ({ user, role, clientId }: { user: User; role: RoleKey; clientId?: string }) =>
+      api.post<User>(`/users/${user.id}/approve`, {
+        role,
+        ...(clientId === undefined || clientId === '' ? {} : { clientId }),
+      }),
+    onSuccess: (updated) => {
+      invalidate();
+      notify(
+        'success',
+        'Acesso liberado',
+        `${updated.name} · ${ROLE_LABELS[updated.role]}${
+          updated.clientName === null ? '' : ` · ${updated.clientName}`
+        }`,
+      );
+    },
+    onError: (e) => {
+      notifyError(e);
+    },
+  });
+
+  const reject = useMutation({
+    mutationFn: (user: User) => api.post<{ ok: true }>(`/users/${user.id}/reject`),
+    onSuccess: () => {
+      invalidate();
+      notify('success', 'Cadastro recusado', 'O e-mail volta a ficar livre para novo cadastro.');
+    },
+    onError: (e) => {
+      notifyError(e);
+    },
+  });
+
+  if (pending.isError) {
+    return (
+      <ErrorState
+        message="Não foi possível carregar os cadastros."
+        onRetry={() => {
+          void pending.refetch();
+        }}
+      />
+    );
+  }
+
+  const queue = pending.data?.items ?? [];
+  const active = (everyone.data?.items ?? []).filter((item) => item.status !== 'pendente');
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <div className="flex items-center justify-between p-5 pb-3">
+          <div>
+            <h3 className="font-semibold">Cadastros aguardando liberação</h3>
+            <p className="text-sm text-sub">
+              Quem se cadastrou na tela de login. Escolha o perfil e libere o acesso.
+            </p>
+          </div>
+          {queue.length > 0 && <Badge tone="warning">{queue.length} na fila</Badge>}
+        </div>
+
+        {pending.isPending ? (
+          <Loading />
+        ) : queue.length === 0 ? (
+          <Empty
+            icon="ShieldCheck"
+            title="Nenhum cadastro na fila"
+            desc="Quando alguém se cadastrar na tela de login, o pedido aparece aqui."
+          />
+        ) : (
+          <div className="divide-y divide-line border-t border-line">
+            {queue.map((item) => {
+              const role = chosenRole(item.id);
+              const busy = approve.isPending || reject.isPending;
+
+              return (
+                <div key={item.id} className="p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar name={item.name} />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{item.name}</p>
+                        <p className="truncate text-sm text-sub">{item.email}</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-sub">
+                      Solicitado em {formatDateTime(item.createdAt)}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <Field label="Perfil de acesso" help="Define o que a pessoa pode ver e fazer.">
+                      <Select
+                        value={role}
+                        onChange={(e) => {
+                          setRoles((current) => ({
+                            ...current,
+                            [item.id]: e.target.value as RoleKey,
+                          }));
+                        }}
+                      >
+                        {ROLE_KEYS.map((key) => (
+                          <option key={key} value={key}>
+                            {ROLE_LABELS[key]}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+
+                    {/*
+                      Papel Cliente exige um cadastro de cliente do outro lado —
+                      é ele que dá o escopo por linha. Sem vínculo, a pessoa
+                      entra e não vê nada, o que na tela parece defeito.
+                    */}
+                    {role === 'cliente' && (
+                      <Field
+                        label="Vincular ao cliente"
+                        help="Deixe em branco para criar um cadastro novo com estes dados."
+                      >
+                        <Select
+                          value={links[item.id] ?? ''}
+                          disabled={clients.isPending}
+                          onChange={(e) => {
+                            setLinks((current) => ({ ...current, [item.id]: e.target.value }));
+                          }}
+                        >
+                          <option value="">Criar novo cadastro de cliente</option>
+                          {(clients.data?.items ?? []).map((client) => (
+                            <option key={client.id} value={client.id}>
+                              {client.name}
+                              {client.company === null ? '' : ` · ${client.company}`}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Btn
+                      disabled={busy}
+                      onClick={() => {
+                        const clientId = role === 'cliente' ? (links[item.id] ?? '') : '';
+                        confirm({
+                          title: 'Liberar acesso?',
+                          desc: `${item.name} entra como ${ROLE_LABELS[role]} e passa a acessar o sistema com a senha que cadastrou.`,
+                          confirmLabel: 'Liberar',
+                          onConfirm: () => {
+                            approve.mutate({ user: item, role, clientId });
+                          },
+                        });
+                      }}
+                    >
+                      <Icon name="Check" size={16} /> Liberar acesso
+                    </Btn>
+                    <Btn
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        confirm({
+                          title: 'Recusar cadastro?',
+                          desc: `O pedido de ${item.name} é apagado. O e-mail ${item.email} volta a ficar livre para um novo cadastro.`,
+                          danger: true,
+                          confirmLabel: 'Recusar',
+                          onConfirm: () => {
+                            reject.mutate(item);
+                          },
+                        });
+                      }}
+                    >
+                      <Icon name="X" size={16} /> Recusar
+                    </Btn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div className="p-5 pb-3">
+          <h3 className="font-semibold">Usuários com acesso</h3>
+          <p className="text-sm text-sub">
+            Quem já pode entrar, com o perfil de cada um. Alterar perfil de usuário liberado ainda é
+            feito direto no banco.
+          </p>
+        </div>
+
+        {everyone.isPending ? (
+          <Loading />
+        ) : active.length === 0 ? (
+          <Empty icon="Users" title="Nenhum usuário liberado" />
+        ) : (
+          <div className="overflow-x-auto border-t border-line">
+            <table className="w-full text-sm">
+              <thead className="bg-soft">
+                <tr>
+                  <TH>Nome</TH>
+                  <TH>E-mail</TH>
+                  <TH>Perfil</TH>
+                  <TH>Cliente</TH>
+                  <TH>Situação</TH>
+                  <TH>Último acesso</TH>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {active.map((item) => (
+                  <tr key={item.id}>
+                    <TD className="font-medium">{item.name}</TD>
+                    <TD className="text-sub">{item.email}</TD>
+                    <TD>
+                      <Badge tone="neutral">{ROLE_LABELS[item.role]}</Badge>
+                    </TD>
+                    <TD className="text-sub">{item.clientName ?? '—'}</TD>
+                    <TD>
+                      <UserBadge status={item.status} />
+                    </TD>
+                    <TD className="text-sub">
+                      {item.lastLoginAt === null
+                        ? 'nunca entrou'
+                        : formatDateTime(item.lastLoginAt)}
+                    </TD>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }
 

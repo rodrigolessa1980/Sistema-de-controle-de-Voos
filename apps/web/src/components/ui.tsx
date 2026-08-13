@@ -13,14 +13,17 @@ import {
   initials,
   REQUEST_STATUS_LABELS,
   TRIP_STATUS_LABELS,
+  USER_STATUS_LABELS,
   type AircraftStatus,
   type ChargeStatus,
   type ClientFinancialStatus,
   type FlightRequestStatus,
   type TripStatus,
+  type UserStatus,
 } from '@acm/shared';
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Ban,
   Banknote,
@@ -115,6 +118,7 @@ import type { JSX } from 'react';
  */
 const ICONS: Record<string, LucideIcon> = {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Ban,
   Banknote,
@@ -442,6 +446,13 @@ const AIRCRAFT_TONES: Record<AircraftStatus, Tone> = {
   indisponivel: 'neutral',
 };
 
+const USER_TONES: Record<UserStatus, Tone> = {
+  pendente: 'warning',
+  ativo: 'success',
+  inativo: 'neutral',
+  bloqueado: 'danger',
+};
+
 export const TripBadge = ({ status }: { status: TripStatus }): JSX.Element => (
   <Badge tone={TRIP_TONES[status]} dot>
     {TRIP_STATUS_LABELS[status]}
@@ -469,6 +480,12 @@ export const FinancialBadge = ({ status }: { status: ClientFinancialStatus }): J
 export const AircraftBadge = ({ status }: { status: AircraftStatus }): JSX.Element => (
   <Badge tone={AIRCRAFT_TONES[status]} dot>
     {AIRCRAFT_STATUS_LABELS[status]}
+  </Badge>
+);
+
+export const UserBadge = ({ status }: { status: UserStatus }): JSX.Element => (
+  <Badge tone={USER_TONES[status]} dot>
+    {USER_STATUS_LABELS[status]}
   </Badge>
 );
 

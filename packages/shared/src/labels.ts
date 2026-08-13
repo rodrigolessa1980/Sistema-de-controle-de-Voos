@@ -89,6 +89,7 @@ export const BLOCK_KIND_LABELS: Record<BlockKind, string> = {
 };
 
 export const USER_STATUS_LABELS: Record<UserStatus, string> = {
+  pendente: 'Aguardando liberação',
   ativo: 'Ativo',
   inativo: 'Inativo',
   bloqueado: 'Bloqueado',

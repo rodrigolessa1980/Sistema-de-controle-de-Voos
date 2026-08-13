@@ -73,7 +73,37 @@ A partir daí o caminho é o mesmo em desenvolvimento e em produção:
 3. cadastrar as tarifas em **Configurações → Tarifas**;
 4. cadastrar os clientes em **Clientes** — marcando "Criar acesso ao portal"
    para quem vai usar o portal do cliente;
-5. criar os usuários de operação e financeiro.
+5. liberar os acessos da equipe em **Configurações → Permissões**.
+
+### Como alguém ganha acesso
+
+Há três caminhos, e nenhum deles cria acesso sem uma decisão de dentro:
+
+**Autocadastro na tela de login.** Quem abre o sistema vê "Criar cadastro" e
+informa nome, e-mail e senha. A conta é gravada com status `pendente`: existe,
+tem senha conferível, e **não entra em lugar nenhum**. Tentar entrar antes da
+liberação devolve uma mensagem explicando que o cadastro está na fila — e só
+depois de a senha estar correta, para a tela não virar um verificador de quem tem
+conta no sistema.
+
+**Liberação pelo administrador.** Em **Configurações → Permissões** (aba visível
+só para quem tem `user:read`, na prática o admin) fica a fila de cadastros. Para
+cada um, o administrador escolhe o **perfil** — Operacional, Financeiro, Cliente
+ou Administrador — e libera. Quem se cadastra nunca escolhe o próprio perfil.
+Recusar apaga o pedido e devolve o e-mail para uso, de modo que uma recusa por
+engano não deixa a pessoa presa.
+
+Perfil **Cliente** precisa de um cadastro de cliente do outro lado, porque é ele
+que dá o escopo por linha. Na liberação o administrador aponta um cliente
+existente ou deixa em branco para o sistema criar o cadastro com o nome e o
+e-mail informados — e se já houver cliente com aquele e-mail, ele é reaproveitado,
+para não partir o histórico de viagens e cobranças em dois.
+
+**Senha provisória pelo cadastro de cliente.** O caminho antigo continua: marcar
+"Criar acesso ao portal" ao cadastrar um cliente gera senha aleatória, envia por
+e-mail e obriga a troca no primeiro acesso. Depende de `MAIL_API_KEY`
+configurada — com `MAIL_DRY_RUN=1` o e-mail é apenas registrado no log, então a
+senha gerada não chega a ninguém.
 
 ### Carregar os dados do protótipo
 

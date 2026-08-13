@@ -30,6 +30,7 @@ import {
   ROLE_KEYS,
   TARIFF_UNITS,
   TRIP_STATUSES,
+  USER_STATUSES,
 } from './enums';
 import { ALL_PERMISSIONS } from './permissions';
 
@@ -95,21 +96,59 @@ export type ApiError = z.infer<typeof errorSchema>;
 //  AUTENTICAÇÃO
 // ============================================================================
 
+export const emailSchema = z.string().trim().toLowerCase().email('E-mail inválido');
+
+/**
+ * Regra de senha, em um lugar só.
+ *
+ * Vale para a troca de senha E para o autocadastro. Duplicar a regra entre os
+ * dois seria a forma mais fácil de o cadastro aceitar uma senha que a troca
+ * recusa — e o usuário descobrir isso só no primeiro acesso.
+ */
+export const passwordSchema = z
+  .string()
+  .min(10, 'A senha precisa de pelo menos 10 caracteres')
+  .max(128)
+  .refine((v) => /[a-zA-Z]/.test(v) && /\d/.test(v), 'Use ao menos uma letra e um número');
+
 export const loginBodySchema = z.object({
-  email: z.string().trim().toLowerCase().email('E-mail inválido'),
+  email: emailSchema,
   password: z.string().min(1, 'Informe a senha'),
 });
 export type LoginBody = z.infer<typeof loginBodySchema>;
 
 export const changePasswordBodySchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z
-    .string()
-    .min(10, 'A senha precisa de pelo menos 10 caracteres')
-    .max(128)
-    .refine((v) => /[a-zA-Z]/.test(v) && /\d/.test(v), 'Use ao menos uma letra e um número'),
+  newPassword: passwordSchema,
 });
 export type ChangePasswordBody = z.infer<typeof changePasswordBodySchema>;
+
+/**
+ * Autocadastro pela tela de login: nome, e-mail e senha.
+ *
+ * Só isto. Papel, vínculo com cliente e liberação são decisão do administrador
+ * na tela de Configurações → Permissões — quem se cadastra não escolhe o próprio
+ * nível de acesso.
+ */
+export const registerBodySchema = z.object({
+  name: z.string().trim().min(2, 'Informe o nome completo').max(180),
+  email: emailSchema,
+  password: passwordSchema,
+});
+export type RegisterBody = z.infer<typeof registerBodySchema>;
+
+/**
+ * Resposta do autocadastro — sempre a mesma, e-mail novo ou já existente.
+ *
+ * Uma resposta diferente para "e-mail já cadastrado" transformaria a rota
+ * pública em um verificador de quem tem conta no sistema. O mesmo motivo pelo
+ * qual o login não distingue e-mail inexistente de senha errada.
+ */
+export const registerResponseSchema = z.object({
+  ok: z.literal(true),
+  message: z.string(),
+});
+export type RegisterResponse = z.infer<typeof registerResponseSchema>;
 
 export const sessionUserSchema = z.object({
   id: idSchema,
@@ -230,6 +269,49 @@ export const listTariffQuerySchema = paginationQuerySchema.extend({
   aircraftId: idSchema.optional(),
   active: z.coerce.boolean().optional(),
 });
+
+// ============================================================================
+//  USUÁRIOS E LIBERAÇÃO DE ACESSO
+// ============================================================================
+
+/**
+ * Usuário como o administrador o vê em Configurações → Permissões.
+ *
+ * Nunca inclui `passwordHash` — nem para o admin. O hash não tem uso nenhum na
+ * tela, e o que não sai da API não pode vazar por log de proxy, print de tela ou
+ * cache de navegador.
+ */
+export const userSchema = z.object({
+  id: idSchema,
+  name: z.string(),
+  email: z.string(),
+  role: roleKeySchema,
+  status: z.enum(USER_STATUSES),
+  clientId: idSchema.nullable(),
+  clientName: z.string().nullable(),
+  mustChangePassword: z.boolean(),
+  createdAt: isoDateTimeSchema,
+  lastLoginAt: isoDateTimeSchema.nullable(),
+});
+export type User = z.infer<typeof userSchema>;
+
+export const listUserQuerySchema = paginationQuerySchema.extend({
+  status: z.enum(USER_STATUSES).optional(),
+});
+
+/**
+ * Liberação de um cadastro pendente.
+ *
+ * O papel é escolhido pelo administrador na hora de liberar — não vem do
+ * formulário de cadastro. Para o papel `cliente`, `clientId` amarra o login a um
+ * cliente já existente; omitido, o cadastro do cliente é criado a partir do nome
+ * e do e-mail informados no autocadastro.
+ */
+export const approveUserBodySchema = z.object({
+  role: roleKeySchema,
+  clientId: idSchema.optional(),
+});
+export type ApproveUserBody = z.infer<typeof approveUserBodySchema>;
 
 // ============================================================================
 //  CLIENTES

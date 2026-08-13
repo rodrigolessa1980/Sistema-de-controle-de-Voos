@@ -61,6 +61,8 @@ O campo errado fica destacado nos dois casos, não só num toast.
 | Cobrança | `createChargeBodySchema` |
 | Pagamento | `createPaymentBodySchema` |
 | Solicitação de voo | `createFlightRequestBodySchema` |
+| Cadastro na tela de login | `registerBodySchema` |
+| Liberação de acesso | `approveUserBodySchema` |
 
 ### O que isto NÃO é
 
@@ -168,3 +170,46 @@ O `.gitignore` cobre `.env`, `.env.*` (menos `.env.example`), `*.env`,
 Os segredos de produção vivem nos GitHub Secrets, cadastrados por
 `scripts/setup-github-secrets.ps1` — que os **gera na hora** e não imprime nem
 grava nenhum valor.
+
+---
+
+## 4. Ninguém concede acesso a si mesmo
+
+### A regra
+
+O formulário de cadastro é público. O acesso, não. Entre um e outro existe sempre
+uma decisão de quem já está dentro, e o formulário não influencia essa decisão.
+
+Em concreto:
+
+- `POST /api/auth/register` grava `status: 'pendente'`. Conta pendente não vira
+  sessão, não recebe access token e não recebe refresh token — o login para nela
+  mesmo com a senha correta.
+- O corpo do cadastro tem **nome, e-mail e senha**. Não tem papel, não tem
+  `clientId`, não tem status. Não existe campo para pedir `admin`.
+- O papel é decidido em `POST /api/users/:id/approve`, que exige `user:update` —
+  permissão que, na matriz, só o `admin` tem. O operacional entra em Configurações
+  (tem `settings:read`) e **não** libera ninguém: se pudesse, promoveria alguém a
+  admin e teria se promovido por interposta pessoa.
+- Liberar é uma vez só. Um cadastro já liberado é recusado por essa rota, que não
+  serve para trocar o papel de quem já está ativo.
+
+### O que a rota pública não conta
+
+`register` responde exatamente a mesma coisa para e-mail novo e para e-mail já
+cadastrado, e não altera nada no segundo caso. Um "e-mail já existe" ali viraria
+um verificador público de quem tem conta no sistema — e a lista de clientes de um
+táxi aéreo é justamente o que não se confirma para um estranho. É o mesmo motivo
+pelo qual o login não distingue e-mail inexistente de senha errada.
+
+A única exceção é deliberada: a mensagem "aguardando liberação" aparece **depois**
+de a senha ser conferida. Quem chega ali já provou ser o dono da senha, e merece
+saber por que não entra em vez de ficar tentando uma senha que está certa.
+
+### Onde isto está provado
+
+`apps/api/test/registration.test.ts` — 25 casos, com destaque para os três que
+seguram a regra: login com a senha certa em conta pendente devolve 403 e nenhum
+token; o operacional recebe 403 ao tentar liberar; e papel fora do enum é recusado
+pelo contrato antes de qualquer escrita. A matriz por perfil das rotas `/users/*`
+está em `authorization.test.ts`.

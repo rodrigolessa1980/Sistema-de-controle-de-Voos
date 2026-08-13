@@ -82,6 +82,7 @@ describe('sem autenticação', () => {
       ['GET', '/api/changes'],
       ['GET', '/api/dashboard/operacional'],
       ['POST', '/api/trips'],
+      ['GET', '/api/users'],
     ] as const;
 
     for (const [method, url] of rotas) {
@@ -126,6 +127,19 @@ describe('limite 1 — o Operacional NÃO toca no financeiro', () => {
     expect(await forbidden(operacional, 'GET', '/api/reports/financial')).toBe(true);
   });
 
+  /**
+   * Liberar acesso é dar permissão, e quem dá permissão define o próprio teto.
+   *
+   * Sem esta linha, o operacional — que TEM `settings:read` e entra em
+   * Configurações — poderia liberar um cadastro pendente como `admin` e assim se
+   * promover por interposta pessoa.
+   */
+  it('não lê nem libera cadastro de usuário', async () => {
+    expect(await forbidden(operacional, 'GET', '/api/users')).toBe(true);
+    expect(await forbidden(operacional, 'POST', '/api/users/qualquer/approve', {})).toBe(true);
+    expect(await forbidden(operacional, 'POST', '/api/users/qualquer/reject')).toBe(true);
+  });
+
   it('MAS lê cobrança — precisa ver a pendência antes de agendar', async () => {
     expect(await forbidden(operacional, 'GET', '/api/charges')).toBe(false);
   });
@@ -156,8 +170,10 @@ describe('limite 2 — o Financeiro NÃO altera a operação', () => {
     expect(await forbidden(financeiro, 'POST', '/api/requests/qualquer/reject', {})).toBe(true);
   });
 
-  it('não altera configurações', async () => {
+  it('não altera configurações nem libera acesso', async () => {
     expect(await forbidden(financeiro, 'PATCH', '/api/settings', {})).toBe(true);
+    expect(await forbidden(financeiro, 'GET', '/api/users')).toBe(true);
+    expect(await forbidden(financeiro, 'POST', '/api/users/qualquer/approve', {})).toBe(true);
   });
 
   it('MAS lê viagem, cria cobrança e dá baixa — é a função dele', async () => {
@@ -209,6 +225,12 @@ describe('limite 3 — o Cliente é confinado aos próprios dados', () => {
 
   it('não lê a lista completa de clientes', async () => {
     expect(await forbidden(cliente, 'GET', '/api/clients')).toBe(true);
+  });
+
+  it('não lê a lista de usuários nem libera acesso', async () => {
+    expect(await forbidden(cliente, 'GET', '/api/users')).toBe(true);
+    expect(await forbidden(cliente, 'POST', '/api/users/qualquer/approve', {})).toBe(true);
+    expect(await forbidden(cliente, 'POST', '/api/users/qualquer/reject')).toBe(true);
   });
 
   it('não alcança o cadastro de OUTRO cliente', async () => {
@@ -434,6 +456,7 @@ describe('admin', () => {
       '/api/charges',
       '/api/payments',
       '/api/settings',
+      '/api/users',
       '/api/reports/financial',
       '/api/dashboard/operacional',
       '/api/dashboard/financeiro',
