@@ -1522,6 +1522,8 @@ function SettingsPermissions(): JSX.Element {
   const [roles, setRoles] = useState<Record<string, RoleKey>>({});
   /** Cliente escolhido por linha. `''` = criar um cadastro novo. */
   const [links, setLinks] = useState<Record<string, string>>({});
+  /** Papel escolhido na tabela de quem já tem acesso, antes de salvar. */
+  const [newRoles, setNewRoles] = useState<Record<string, RoleKey>>({});
 
   const chosenRole = (id: string): RoleKey => roles[id] ?? 'cliente';
 
@@ -1567,6 +1569,36 @@ function SettingsPermissions(): JSX.Element {
     onSuccess: () => {
       invalidate();
       notify('success', 'Cadastro recusado', 'O e-mail volta a ficar livre para novo cadastro.');
+    },
+    onError: (e) => {
+      notifyError(e);
+    },
+  });
+
+  /**
+   * Troca o papel de quem JÁ tem acesso.
+   *
+   * O autocadastro entra como Cliente; é por aqui que alguém vira Operacional,
+   * Financeiro ou Administrador. Antes disto, a própria tela avisava que a troca
+   * "é feita direto no banco" — o que na prática queria dizer que não era feita.
+   *
+   * O servidor recusa dois casos que a tela também esconde, e a recusa dele é que
+   * vale: trocar o próprio papel, e rebaixar o último administrador ativo.
+   */
+  const changeRole = useMutation({
+    mutationFn: ({ user, role }: { user: User; role: RoleKey }) =>
+      api.patch<User>(`/users/${user.id}/role`, { role }),
+    onSuccess: (updated) => {
+      invalidate();
+      setNewRoles((current) => {
+        const { [updated.id]: _, ...rest } = current;
+        return rest;
+      });
+      notify(
+        'success',
+        'Perfil alterado',
+        `${updated.name} agora é ${ROLE_LABELS[updated.role]}.`,
+      );
     },
     onError: (e) => {
       notifyError(e);
@@ -1723,8 +1755,8 @@ function SettingsPermissions(): JSX.Element {
         <div className="p-5 pb-3">
           <h3 className="font-semibold">Usuários com acesso</h3>
           <p className="text-sm text-sub">
-            Quem já pode entrar, com o perfil de cada um. Alterar perfil de usuário liberado ainda é
-            feito direto no banco.
+            Quem já pode entrar. Quem se cadastra na tela de login entra como Cliente — troque o
+            perfil aqui para dar mais alcance.
           </p>
         </div>
 
@@ -1743,6 +1775,7 @@ function SettingsPermissions(): JSX.Element {
                   <TH>Cliente</TH>
                   <TH>Situação</TH>
                   <TH>Último acesso</TH>
+                  <TH>Ações</TH>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -1751,7 +1784,22 @@ function SettingsPermissions(): JSX.Element {
                     <TD className="font-medium">{item.name}</TD>
                     <TD className="text-sub">{item.email}</TD>
                     <TD>
-                      <Badge tone="neutral">{ROLE_LABELS[item.role]}</Badge>
+                      <Select
+                        value={newRoles[item.id] ?? item.role}
+                        disabled={changeRole.isPending}
+                        onChange={(e) => {
+                          setNewRoles((current) => ({
+                            ...current,
+                            [item.id]: e.target.value as RoleKey,
+                          }));
+                        }}
+                      >
+                        {ROLE_KEYS.map((key) => (
+                          <option key={key} value={key}>
+                            {ROLE_LABELS[key]}
+                          </option>
+                        ))}
+                      </Select>
                     </TD>
                     <TD className="text-sub">{item.clientName ?? '—'}</TD>
                     <TD>
@@ -1761,6 +1809,32 @@ function SettingsPermissions(): JSX.Element {
                       {item.lastLoginAt === null
                         ? 'nunca entrou'
                         : formatDateTime(item.lastLoginAt)}
+                    </TD>
+                    <TD>
+                      {/*
+                        O botão só aparece quando o seletor difere do papel
+                        gravado. Um "Salvar" sempre visível em toda linha convida
+                        ao clique distraído numa tabela cuja unidade é acesso de
+                        gente.
+                      */}
+                      {(newRoles[item.id] ?? item.role) !== item.role && (
+                        <Btn
+                          disabled={changeRole.isPending}
+                          onClick={() => {
+                            const role = newRoles[item.id] ?? item.role;
+                            confirm({
+                              title: 'Trocar o perfil?',
+                              desc: `${item.name} passa de ${ROLE_LABELS[item.role]} para ${ROLE_LABELS[role]}. O alcance muda no próximo carregamento de tela dele.`,
+                              confirmLabel: 'Trocar perfil',
+                              onConfirm: () => {
+                                changeRole.mutate({ user: item, role });
+                              },
+                            });
+                          }}
+                        >
+                          <Icon name="Check" size={16} /> Salvar
+                        </Btn>
+                      )}
                     </TD>
                   </tr>
                 ))}

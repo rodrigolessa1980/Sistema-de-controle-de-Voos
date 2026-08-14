@@ -1,13 +1,16 @@
 /**
- * Autocadastro e liberação de acesso.
+ * Autocadastro e papel de acesso.
  *
- * O que precisa ficar provado aqui é a garantia central do fluxo: abrir um
- * formulário público de cadastro NÃO abre o sistema. Entre o cadastro e o
- * primeiro login existe uma decisão humana, e nenhum caminho pula essa decisão.
+ * O cadastro público entra DIRETO, como Cliente — não há fila de liberação, nem
+ * confirmação por e-mail, nem exigência de senha forte (decisão de produto).
  *
- * O caso que mais importa é o do "quase": senha certa, conta existente, e ainda
- * assim sem sessão — porque `status` é `pendente`. É o único jeito de saber que a
- * conta pendente não vira acesso por acidente.
+ * Isso desloca a garantia central, mas não a remove: o que precisa ficar provado
+ * aqui é que o formulário público não é um caminho para GANHAR ALCANCE. Quem se
+ * cadastra recebe `cliente`, o papel de menor alcance, com escopo fechado no
+ * próprio `clientId` — e nenhum campo do corpo da requisição muda isso.
+ *
+ * O caso que mais importa passou a ser o do "atalho": mandar `role: 'admin'` no
+ * cadastro e continuar saindo de lá como cliente.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -96,8 +99,58 @@ async function register(
 const login = (email: string, password = SENHA) =>
   app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password } });
 
+/**
+ * Uma conta PENDENTE, do jeito que o autocadastro a criava antes de o cadastro
+ * passar a entrar direto.
+ *
+ * O fluxo de liberacao nao foi removido: contas pendentes gravadas antes da
+ * mudanca continuam existindo em producao, e `approve`/`reject` sao o que as
+ * resolve. Como `/auth/register` nao produz mais esse estado, o cenario passa a
+ * ser montado aqui, pelo banco - que e de onde ele vem na vida real.
+ */
+async function criarPendente(
+  overrides: Partial<{ name: string; email: string }> = {},
+): Promise<{ id: string; email: string }> {
+  const email =
+    overrides.email ?? `pendente-${Math.random().toString(36).slice(2, 10)}@teste.local`;
+  const name = overrides.name ?? 'Pessoa Pendente';
+
+  const { hash } = await import('bcryptjs');
+  const papel = await prisma.role.findUniqueOrThrow({ where: { key: 'cliente' } });
+
+  const user = await prisma.user.create({
+    data: {
+      email,
+      name,
+      passwordHash: await hash(SENHA, 10),
+      roleId: papel.id,
+      status: 'pendente',
+      mustChangePassword: false,
+    },
+    select: { id: true },
+  });
+
+  const admins = await prisma.user.findMany({
+    where: { status: 'ativo', deletedAt: null, role: { key: 'admin' } },
+    select: { id: true },
+  });
+
+  await prisma.notification.createMany({
+    data: admins.map((a) => ({
+      userId: a.id,
+      type: 'cadastro_pendente' as const,
+      title: 'Novo cadastro aguardando liberacao',
+      body: `${name} - ${email}`,
+      entity: 'user',
+      entityId: user.id,
+    })),
+  });
+
+  return { id: user.id, email };
+}
+
 describe('cadastro pela tela de login', () => {
-  it('cria a conta como pendente, sem papel de acesso efetivo', async () => {
+  it('cria a conta ATIVA, como cliente e já com cadastro de cliente vinculado', async () => {
     const { email, status } = await register({ name: 'Maria Souza' });
     expect(status).toBe(200);
 
@@ -109,17 +162,74 @@ describe('cadastro pela tela de login', () => {
         clientId: true,
         mustChangePassword: true,
         role: { select: { key: true } },
+        client: { select: { name: true, email: true } },
       },
     });
 
-    expect(created.status).toBe('pendente');
+    expect(created.status).toBe('ativo');
     expect(created.name).toBe('Maria Souza');
-    // Papel de menor alcance e sem vínculo: mesmo que a conta escapasse ativa, o
-    // escopo por linha trataria `clientId` nulo como "não vê nada".
     expect(created.role.key).toBe('cliente');
-    expect(created.clientId).toBeNull();
     // Senha escolhida pela pessoa: não há nada de provisório a trocar.
     expect(created.mustChangePassword).toBe(false);
+
+    /**
+     * O vínculo é o que faz a conta valer alguma coisa.
+     *
+     * `clientId` nulo com papel cliente significa escopo que não casa com linha
+     * nenhuma: a pessoa entra e toda tela vem vazia, o que na prática é pior que
+     * não entrar, porque parece defeito do sistema.
+     */
+    expect(created.clientId).not.toBeNull();
+    expect(created.client?.email).toBe(email);
+    expect(created.client?.name).toBe('Maria Souza');
+  });
+
+  it('entra no sistema logo depois de se cadastrar', async () => {
+    const { email } = await register();
+
+    const response = await login(email);
+    expect(response.statusCode).toBe(200);
+
+    const body = response.json<{ user: { role: string; clientId: string | null } }>();
+    expect(body.user.role).toBe('cliente');
+    expect(body.user.clientId).not.toBeNull();
+  });
+
+  it('reaproveita o cliente que já existe com o mesmo e-mail', async () => {
+    const existente = await makeClient({ name: 'Cliente Antigo', email: 'antigo@teste.local' });
+
+    const { email } = await register({ email: 'antigo@teste.local', name: 'Nome do Cadastro' });
+    expect(email).toBe('antigo@teste.local');
+
+    const created = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { clientId: true },
+    });
+
+    // O mesmo cadastro, não um segundo: duplicar partiria o histórico de viagens
+    // e cobranças em dois, e o portal mostraria metade.
+    expect(created.clientId).toBe(existente.id);
+    expect(await prisma.client.count({ where: { email: 'antigo@teste.local' } })).toBe(1);
+  });
+
+  it('não concede papel pedido no corpo da requisição', async () => {
+    const email = `atalho-${Math.random().toString(36).slice(2, 10)}@teste.local`;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { name: 'Pessoa Esperta', email, password: SENHA, role: 'admin' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const created = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { role: { select: { key: true } } },
+    });
+
+    // O campo não existe no schema da rota; se um dia passar a existir, este
+    // caso quebra antes de virar escalada de privilégio em produção.
+    expect(created.role.key).toBe('cliente');
   });
 
   it('a senha é gravada como hash, nunca em texto', async () => {
@@ -133,9 +243,29 @@ describe('cadastro pela tela de login', () => {
     expect(passwordHash.startsWith('$2')).toBe(true);
   });
 
-  it('recusa senha fraca sem criar nada', async () => {
-    const { email, status } = await register({ password: 'curta1' });
+  /**
+   * Senha curta e sem número é ACEITA — por decisão de produto, o cadastro é
+   * aberto na home e qualquer atrito ali custa cliente.
+   *
+   * O caso está aqui em vez de simplesmente ter sido apagado porque a regra
+   * afrouxada é uma escolha, não um esquecimento: se alguém reapertar o
+   * `passwordSchema` sem querer, isto acusa.
+   */
+  it('aceita senha curta e sem número', async () => {
+    const { email, status } = await register({ password: 'a' });
 
+    expect(status).toBe(200);
+    expect(await prisma.user.findUnique({ where: { email } })).not.toBeNull();
+
+    const entrada = await login(email, 'a');
+    expect(entrada.statusCode).toBe(200);
+  });
+
+  it('recusa senha vazia', async () => {
+    const { email, status } = await register({ password: '' });
+
+    // Senha vazia não é senha fraca: é conta sem senha, e o login dela passaria
+    // com o campo em branco.
     expect(status).toBe(422);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
   });
@@ -185,9 +315,9 @@ describe('cadastro pela tela de login', () => {
   });
 });
 
-describe('login antes da liberação', () => {
+describe('login de conta pendente (legado)', () => {
   it('recusa com a senha CERTA e explica o motivo', async () => {
-    const { email } = await register();
+    const { email } = await criarPendente();
 
     const response = await login(email);
 
@@ -199,7 +329,7 @@ describe('login antes da liberação', () => {
   });
 
   it('com a senha errada cai na mensagem genérica, sem revelar que a conta existe', async () => {
-    const { email } = await register();
+    const { email } = await criarPendente();
 
     const response = await login(email, 'SenhaErrada2026');
 
@@ -210,7 +340,7 @@ describe('login antes da liberação', () => {
   });
 
   it('não emite refresh token utilizável', async () => {
-    const { email } = await register();
+    const { email } = await criarPendente();
     await login(email);
 
     const user = await prisma.user.findUniqueOrThrow({
@@ -226,14 +356,14 @@ describe('aviso no sino', () => {
   const bell = (user: TestUser) =>
     app.inject({ method: 'GET', url: '/api/notifications', headers: auth(user) });
 
-  it('avisa quem pode liberar, e só quem pode', async () => {
+  it('avisa quem administra, e só quem administra', async () => {
     const { email } = await register({ name: 'Ana Ribeiro' });
 
     const doAdmin = (await bell(admin)).json<{
       items: { type: string; title: string; body: string | null }[];
       unread: number;
     }>();
-    const aviso = doAdmin.items.find((i) => i.type === 'cadastro_pendente');
+    const aviso = doAdmin.items.find((i) => i.type === 'cliente_cadastrado');
 
     expect(aviso).toBeDefined();
     expect(doAdmin.unread).toBeGreaterThan(0);
@@ -247,7 +377,7 @@ describe('aviso no sino', () => {
     for (const outro of [operacional, cliente]) {
       const itens = (await bell(outro)).json<{ items: { type: string }[] }>().items;
       expect(
-        itens.some((i) => i.type === 'cadastro_pendente'),
+        itens.some((i) => i.type === 'cliente_cadastrado'),
         outro.email,
       ).toBe(false);
     }
@@ -255,28 +385,24 @@ describe('aviso no sino', () => {
 
   it('o aviso carrega o destino do clique', async () => {
     const { email } = await register();
-    const pendente = await prisma.user.findUniqueOrThrow({
+    const novo = await prisma.user.findUniqueOrThrow({
       where: { email },
       select: { id: true },
     });
 
     const aviso = await prisma.notification.findFirstOrThrow({
-      where: { type: 'cadastro_pendente', userId: admin.id },
+      where: { type: 'cliente_cadastrado', userId: admin.id },
       select: { entity: true, entityId: true },
     });
 
     // `entity` + `entityId` são o que o front traduz em rota (`notificationPath`).
     // Sem eles o aviso é texto morto e a pessoa tem de achar a tela sozinha.
     expect(aviso.entity).toBe('user');
-    expect(aviso.entityId).toBe(pendente.id);
+    expect(aviso.entityId).toBe(novo.id);
   });
 
   it('liberar fecha o aviso', async () => {
-    const { email } = await register();
-    const pendente = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const pendente = await criarPendente();
 
     expect((await bell(admin)).json<{ unread: number }>().unread).toBeGreaterThan(0);
 
@@ -296,11 +422,7 @@ describe('aviso no sino', () => {
   });
 
   it('recusar também fecha o aviso', async () => {
-    const { email } = await register();
-    const pendente = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const pendente = await criarPendente();
 
     await app.inject({
       method: 'POST',
@@ -329,11 +451,7 @@ describe('aviso no sino', () => {
       email: `admin2-${Math.random().toString(36).slice(2, 8)}@teste.local`,
     });
 
-    const { email } = await register();
-    const pendente = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const pendente = await criarPendente();
 
     expect(
       await prisma.notification.count({
@@ -354,7 +472,7 @@ describe('aviso no sino', () => {
 
 describe('fila de liberação', () => {
   it('só quem tem user:read enxerga a lista', async () => {
-    await register();
+    await criarPendente();
 
     expect((await app.inject({ method: 'GET', url: '/api/users' })).statusCode).toBe(401);
 
@@ -374,7 +492,7 @@ describe('fila de liberação', () => {
   });
 
   it('a listagem nunca devolve o hash da senha', async () => {
-    await register();
+    await criarPendente();
 
     const response = await app.inject({
       method: 'GET',
@@ -388,8 +506,8 @@ describe('fila de liberação', () => {
   });
 
   it('filtra por status e conta o total', async () => {
-    await register();
-    await register();
+    await criarPendente();
+    await criarPendente();
 
     const response = await app.inject({
       method: 'GET',
@@ -404,15 +522,8 @@ describe('fila de liberação', () => {
 });
 
 describe('liberação pelo administrador', () => {
-  /** Cadastra e devolve o id da linha pendente. */
-  async function pendingUser(): Promise<{ id: string; email: string }> {
-    const { email } = await register();
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
-    return { id: user.id, email };
-  }
+  /** A linha pendente que a liberação resolve. */
+  const pendingUser = criarPendente;
 
   const approve = (id: string, payload: object, actor: TestUser = admin) =>
     app.inject({ method: 'POST', url: `/api/users/${id}/approve`, headers: auth(actor), payload });
@@ -538,11 +649,8 @@ describe('liberação pelo administrador', () => {
 
 describe('recusa pelo administrador', () => {
   it('apaga o cadastro e libera o e-mail para nova tentativa', async () => {
-    const { email } = await register();
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const user = await criarPendente();
+    const { email } = user;
 
     const response = await app.inject({
       method: 'POST',
@@ -561,11 +669,8 @@ describe('recusa pelo administrador', () => {
   });
 
   it('guarda quem era na auditoria, mesmo com a linha apagada', async () => {
-    const { email } = await register();
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const user = await criarPendente();
+    const { email } = user;
 
     await app.inject({
       method: 'POST',
@@ -591,11 +696,7 @@ describe('recusa pelo administrador', () => {
   });
 
   it('operacional não recusa ninguém', async () => {
-    const { email } = await register();
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { email },
-      select: { id: true },
-    });
+    const user = await criarPendente();
 
     const response = await app.inject({
       method: 'POST',

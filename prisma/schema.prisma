@@ -141,6 +141,9 @@ enum NotificationType {
   /// Alguém se cadastrou na tela de login e espera liberação. Vai para quem tem
   /// `user:update`. Valor NOVO no fim da lista: MySQL guarda ENUM por posição.
   cadastro_pendente
+  /// Um cliente se cadastrou sozinho e JÁ entrou (não há fila de liberação).
+  /// Notícia para quem administra, não trabalho pendente.
+  cliente_cadastrado
 }
 
 /// Ciclo de vida de um e-mail na fila de saída (padrão outbox).

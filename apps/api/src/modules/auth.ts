@@ -39,6 +39,7 @@ import {
 } from '../lib/auth';
 import { recordChange } from '../lib/changefeed';
 import { badRequest, forbidden, unauthorized } from '../lib/errors';
+import { resolveClientForUser } from '../lib/client-link';
 import { findUsersWithPermission } from '../lib/notify';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireUser } from '../plugins/rbac';
@@ -199,18 +200,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // ---------------------------------------------------------------- register
   /**
-   * Autocadastro pela tela de login.
+   * Autocadastro pela tela de login: a conta já entra, como Cliente.
    *
-   * A conta nasce `pendente`: existe, tem senha, e não entra em lugar nenhum até
-   * o administrador liberar em Configurações → Permissões. É o que permite abrir
-   * um formulário público em um sistema com RBAC sem abrir o sistema.
+   * Decisão de produto: não há fila de liberação, não há confirmação por e-mail e
+   * não há exigência de senha forte. Quem se cadastra usa o sistema no mesmo
+   * minuto. O que sustenta isso é o papel: `cliente` é o de MENOR alcance da
+   * matriz, e o escopo por linha (`clientScope` em plugins/rbac.ts) fecha o
+   * `where` de toda consulta no `clientId` da própria pessoa. Um cadastro novo
+   * não enxerga aeronave, tarifa interna, nem uma linha de outro cliente.
    *
-   * O papel gravado agora é `cliente`, o de MENOR alcance — `roleId` é
-   * obrigatório no schema e alguma coisa tem de ficar ali. Quem decide o papel de
-   * verdade é o administrador na liberação. Se algum dia esta linha vazar para um
-   * caminho que ative a conta sem passar pela aprovação, o pior que se ganha é o
-   * acesso de um cliente sem `clientId` — que o escopo por linha já trata como
-   * "não vê nada" (ver `clientScope` em plugins/rbac.ts).
+   * Nenhum caminho público concede papel: `role` NÃO existe no corpo desta rota.
+   * Subir alguém para Operacional, Financeiro ou Administrador é ato do
+   * administrador, em Configurações → Permissões.
+   *
+   * O `Client` é criado JUNTO, na mesma transação. Sem ele o `clientId` fica
+   * `null`, o escopo não casa com nada e a pessoa entra num sistema onde toda
+   * tela vem vazia — que na prática é pior que não entrar, porque parece defeito.
    */
   route.post(
     '/register',
@@ -227,7 +232,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
       const response = {
         ok: true,
-        message: 'Cadastro enviado. Você poderá entrar assim que o administrador liberar o acesso.',
+        message: 'Cadastro concluído. Você já pode entrar com o e-mail e a senha que escolheu.',
       } as const;
 
       const existing = await prisma.user.findUnique({
@@ -258,7 +263,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             name,
             passwordHash: await hashPassword(password),
             roleId: clientRole.id,
-            status: 'pendente',
+            status: 'ativo',
             // Senha escolhida pela própria pessoa: não há nada de provisório.
             mustChangePassword: false,
           },
@@ -266,27 +271,36 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         });
 
         /**
-         * Aviso no sino de quem pode liberar.
+         * O cadastro de cliente que dá escopo à conta.
          *
-         * Vai para quem tem `user:update` — não para "o admin". Se amanhã um
-         * segundo administrador entrar, ele passa a ser avisado sem deploy; e
-         * quem tiver a permissão suspensa por `deny` para de receber aviso de um
-         * trabalho que não pode mais fazer.
+         * `user.id` como autor do evento: quem provocou a criação foi a própria
+         * pessoa, e atribuir isso a um administrador que não estava lá tornaria a
+         * auditoria mentirosa.
          *
-         * `entity: 'user'` é o que o clique usa para chegar em
-         * Configurações → Permissões (`notificationPath` em @acm/shared).
-         *
-         * Na MESMA transação do usuário: se o insert falhar, o cadastro não
-         * existe. O contrário — cadastro sem aviso — seria um pedido esperando
-         * numa fila que ninguém sabe que encheu.
+         * Reaproveita o `Client` que já existir com este e-mail — o caso comum é
+         * o cliente já estar na base, cadastrado pelo operacional, e só agora
+         * pedir acesso ao portal (ver `lib/client-link.ts`).
          */
-        const approvers = await findUsersWithPermission(tx, 'user:update');
-        if (approvers.length > 0) {
+        const clientId = await resolveClientForUser(tx, { name, email }, user.id);
+        await tx.user.update({ where: { id: user.id }, data: { clientId } });
+
+        /**
+         * Aviso no sino de quem administra.
+         *
+         * Não é mais fila de trabalho — a conta já entrou. É notícia: um cliente
+         * novo apareceu, e quem administra decide se quer promover o papel. Vai
+         * para quem tem `user:update` (permissão, não pessoa), então um segundo
+         * administrador passa a ser avisado sem deploy.
+         *
+         * Na MESMA transação: se o insert falhar, o cadastro não existe.
+         */
+        const admins = await findUsersWithPermission(tx, 'user:update');
+        if (admins.length > 0) {
           await tx.notification.createMany({
-            data: approvers.map((approver) => ({
-              userId: approver.id,
-              type: 'cadastro_pendente' as const,
-              title: 'Novo cadastro aguardando liberação',
+            data: admins.map((admin) => ({
+              userId: admin.id,
+              type: 'cliente_cadastrado' as const,
+              title: 'Novo cliente se cadastrou',
               body: `${name} · ${email}`,
               entity: 'user',
               entityId: user.id,
@@ -304,33 +318,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             action: 'auth.register',
             entity: 'user',
             entityId: user.id,
-            after: { name, email, status: 'pendente' },
+            after: { name, email, status: 'ativo', role: 'cliente' },
             ip: request.ip,
             userAgent: request.headers['user-agent']?.slice(0, 255) ?? null,
           },
         });
 
-        return { id: user.id, notified: approvers.length };
+        return { id: user.id, clientId, notified: admins.length };
       });
 
       request.log.info(
-        { userId: created.id, avisados: created.notified },
-        'novo cadastro aguardando liberação',
+        { userId: created.id, clientId: created.clientId, avisados: created.notified },
+        'novo cliente cadastrado pela tela de login',
       );
-
-      /**
-       * Ninguém com permissão para liberar.
-       *
-       * Acontece se o único admin for desativado. O cadastro fica gravado, mas
-       * dorme numa fila sem leitor — e como a resposta ao público é sempre a
-       * mesma, nada na tela denuncia isso. O log em nível `error` é o que dá para
-       * fazer sem contar ao visitante como está a operação por dentro.
-       */
-      if (created.notified === 0) {
-        request.log.error(
-          'cadastro pendente sem ninguém para liberar: nenhum usuário ativo com user:update',
-        );
-      }
 
       return response;
     },

@@ -80,32 +80,40 @@ A partir daí o caminho é o mesmo em desenvolvimento e em produção:
 Há três caminhos, e nenhum deles cria acesso sem uma decisão de dentro:
 
 **Autocadastro na tela de login.** Quem abre o sistema vê "Criar cadastro" e
-informa nome, e-mail e senha. A conta é gravada com status `pendente`: existe,
-tem senha conferível, e **não entra em lugar nenhum**. Tentar entrar antes da
-liberação devolve uma mensagem explicando que o cadastro está na fila — e só
-depois de a senha estar correta, para a tela não virar um verificador de quem tem
-conta no sistema.
+informa nome, e-mail e senha. A conta **já entra**, com o perfil **Cliente** — não
+há fila de liberação, confirmação por e-mail nem exigência de senha forte.
+
+O que sustenta isso é o perfil, não uma barreira na porta: `cliente` é o de menor
+alcance da matriz, e o escopo por linha fecha o `where` de toda consulta no
+`clientId` da própria pessoa. Um cadastro novo não enxerga aeronave, tarifa
+interna, nem uma linha de outro cliente. O cadastro de `Client` que dá esse
+escopo é criado na mesma transação — reaproveitando o que já existir com aquele
+e-mail, para não partir o histórico em dois.
+
+Nenhum caminho público concede papel: `role` não existe no corpo da rota de
+cadastro. Subir alguém para Operacional, Financeiro ou Administrador é ato do
+administrador, em **Configurações → Permissões**.
 
 **Aviso no sino.** Cada cadastro novo gera notificação para quem tem
 `user:update` — não para "o admin" nomeado: um segundo administrador passa a ser
-avisado sem deploy, e quem tiver a permissão suspensa para de receber. **O clique
-no aviso leva direto para a fila de liberação** (`?aba=permissoes`), e o aviso é
-marcado como lido assim que o pedido é liberado ou recusado, inclusive para os
-outros administradores — badge que continua vermelho depois de resolvido é badge
-que mente.
+avisado sem deploy, e quem tiver a permissão suspensa para de receber. É notícia,
+não trabalho pendente: a conta já entrou. **O clique leva direto para a lista de
+acessos** (`?aba=permissoes`), onde o perfil pode ser trocado.
 
-**Liberação pelo administrador.** Em **Configurações → Permissões** (aba visível
-só para quem tem `user:read`, na prática o admin) fica a fila de cadastros. Para
-cada um, o administrador escolhe o **perfil** — Operacional, Financeiro, Cliente
-ou Administrador — e libera. Quem se cadastra nunca escolhe o próprio perfil.
-Recusar apaga o pedido e devolve o e-mail para uso, de modo que uma recusa por
-engano não deixa a pessoa presa.
+**Troca de perfil pelo administrador.** Em **Configurações → Permissões** (aba
+visível só para quem tem `user:read`, na prática o admin) fica a lista de quem
+tem acesso, com um seletor de perfil por linha. É por ali que um cliente vira
+Operacional, Financeiro ou Administrador — ou volta a ser cliente. Quem se
+cadastra nunca escolhe o próprio perfil.
 
-Perfil **Cliente** precisa de um cadastro de cliente do outro lado, porque é ele
-que dá o escopo por linha. Na liberação o administrador aponta um cliente
-existente ou deixa em branco para o sistema criar o cadastro com o nome e o
-e-mail informados — e se já houver cliente com aquele e-mail, ele é reaproveitado,
-para não partir o histórico de viagens e cobranças em dois.
+Duas recusas do servidor, que a tela não deve ser a única a lembrar: **ninguém
+troca o próprio papel** (um administrador que se rebaixasse por engano perderia o
+acesso que conserta o engano) e **o último administrador ativo não pode ser
+rebaixado** (sem isso o sistema fica sem ninguém que possa mexer em permissão, e
+não há tela que resolva — só banco).
+
+A fila de liberação continua existindo para as contas `pendente` gravadas antes
+desta mudança: `approve` define papel e ativa, `reject` apaga e devolve o e-mail.
 
 **Senha provisória pelo cadastro de cliente.** O caminho antigo continua: marcar
 "Criar acesso ao portal" ao cadastrar um cliente gera senha aleatória, envia por

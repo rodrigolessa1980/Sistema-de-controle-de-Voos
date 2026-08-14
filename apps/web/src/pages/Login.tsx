@@ -9,7 +9,7 @@
  * separada: é o pedido — "precisa na tela principal para se registrar" — e evita
  * que alguém chegue em `/cadastrar` por link antigo depois de o autocadastro ser
  * desligado. Quem se cadastra sai com a conta `pendente`; o acesso só existe
- * depois de o administrador liberar em Configurações → Permissões.
+ * como Cliente, e já entra — o alcance de cliente é fechado no próprio cadastro.
  */
 
 import { HOME_PATH, registerBodySchema, type RegisterResponse } from '@acm/shared';
@@ -331,7 +331,7 @@ function RegisterForm({ onBack }: { onBack: () => void }): JSX.Element {
         <Field
           label="Senha"
           required
-          help="Mínimo de 10 caracteres, com ao menos uma letra e um número."
+          help="Escolha a senha que preferir — não há exigência de tamanho nem de formato."
           error={errors['password']}
         >
           <div className="relative">
@@ -418,7 +418,6 @@ export function ChangePasswordPage(): JSX.Element {
   const [submitting, setSubmitting] = useState(false);
 
   const mismatch = confirmation !== '' && next !== confirmation;
-  const tooShort = next !== '' && next.length < 10;
   const valid = current !== '' && next.length >= 10 && next === confirmation;
 
   const submit = async (event: React.FormEvent): Promise<void> => {
@@ -485,8 +484,7 @@ export function ChangePasswordPage(): JSX.Element {
           <Field
             label="Nova senha"
             required
-            help="Mínimo de 10 caracteres, com ao menos uma letra e um número."
-            error={tooShort ? 'A senha precisa de pelo menos 10 caracteres.' : undefined}
+            help="Escolha a senha que preferir — não há exigência de tamanho nem de formato."
           >
             <Input
               type="password"

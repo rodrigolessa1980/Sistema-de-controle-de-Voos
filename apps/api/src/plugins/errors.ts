@@ -106,7 +106,7 @@ export const errorsPlugin = fp(
         }
       }
 
-      // ---- rate limit do @fastify/rate-limit
+      // ---- erros que o próprio Fastify já classificou
       // O erro chega como `unknown` sob `useUnknownInCatchVariables`; narrowing
       // explícito em vez de cast, para não presumir formato de erro alheio.
       const statusCode =
@@ -117,6 +117,41 @@ export const errorsPlugin = fp(
       if (statusCode === 429) {
         void reply.status(429).send({
           error: { code: 'RATE_LIMITED', message: 'Muitas requisições. Tente em instantes.' },
+        });
+        return;
+      }
+
+      /**
+       * Qualquer outro 4xx do Fastify sai como 4xx, não como 500.
+       *
+       * Antes, só o 429 era reconhecido: `FST_ERR_CTP_INVALID_MEDIA_TYPE` (415),
+       * `FST_ERR_CTP_EMPTY_JSON_BODY` (400) e o 413 de upload grande caíam no
+       * ramo "desconhecido" e o cliente recebia **500 "Erro interno. A operação
+       * foi registrada."** — uma mensagem que manda procurar defeito no servidor
+       * quando quem errou foi a requisição. De quebra, cada um desses ia para o
+       * log em nível `error`, misturando engano de cliente com incidente de
+       * verdade e estragando qualquer alarme baseado em taxa de erro.
+       *
+       * O `code` do Fastify vai junto porque é ele que diz o que houve
+       * (`FST_ERR_CTP_*`); a `message` dessas classes descreve a requisição, não
+       * o interior do sistema, então pode ser repassada.
+       *
+       * Nível `warn`, não `error`: é sinal de cliente mal-comportado, e vale
+       * enxergar sem virar incidente.
+       */
+      if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String(error.code)
+            : 'BAD_REQUEST';
+
+        request.log.warn({ err: error, statusCode }, 'requisição recusada pelo Fastify');
+
+        void reply.status(statusCode).send({
+          error: {
+            code,
+            message: error instanceof Error && error.message !== '' ? error.message : 'Requisição inválida.',
+          },
         });
         return;
       }

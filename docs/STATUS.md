@@ -14,7 +14,7 @@ honesto — o que roda, o que está bloqueado e o que descobri no caminho.
 |---|---|
 | **0 · Fundação** | Monorepo npm, TypeScript strict, ESLint com zero warning, Vitest, Dockerfiles, workflows |
 | **1 · Dados** | Migration aplicada — 23 tabelas criadas. Seed **só estrutural**: papéis, permissões, configurações e o administrador |
-| **2 · Auth/RBAC** | Login, autocadastro com liberação pelo admin, refresh rotativo, `requirePermission`, escopo por linha, DTO por perfil |
+| **2 · Auth/RBAC** | Login, autocadastro entrando como Cliente, troca de perfil pelo admin, refresh rotativo, `requirePermission`, escopo por linha, DTO por perfil |
 | **3 · Operacional** | 6 telas · `check-availability` · cálculo de tarifa · conversão de solicitação |
 | **4 · Financeiro** | 5 telas · cobrança · pagamento · baixa · estorno · relatórios |
 | **5 · Cliente** | 6 telas · upload de documento · disponibilidade mascarada |
@@ -44,15 +44,22 @@ Não são testes com mock — são chamadas HTTP contra a API conectada ao MySQL
 | Cliente pedindo o cadastro de OUTRO cliente | **403** |
 | Cliente pedindo o próprio cadastro | **200** |
 
-### Autocadastro e liberação de acesso
+### Autocadastro e perfil de acesso
 
-Formulário público na tela de login (nome, e-mail e senha) + fila de liberação em
-**Configurações → Permissões**. 25 casos em `registration.test.ts`:
+Formulário público na tela de login (nome, e-mail e senha). **A conta entra
+direto, como Cliente** — sem fila, sem confirmação por e-mail, sem exigência de
+senha forte. O que segura não é uma barreira na porta: é o perfil de menor
+alcance somado ao escopo por linha. Casos em `registration.test.ts`:
 
 | Verificação | Resultado |
 |---|---|
-| Cadastro pela tela de login | conta criada com `status: pendente` |
-| Login em conta pendente **com a senha certa** | **403**, nenhum token, nenhum cookie |
+| Cadastro pela tela de login | conta `ativa`, papel `cliente`, `Client` vinculado |
+| Login logo depois de cadastrar | **200** · `role: cliente` · `clientId` preenchido |
+| Cadastro com e-mail de cliente já existente | reaproveita o cadastro, não duplica |
+| `role: 'admin'` no corpo do cadastro | ignorado · a conta sai como `cliente` |
+| Senha de 1 caractere, sem número | **aceita** (decisão de produto) |
+| Senha vazia | **422** · conta sem senha não é senha fraca |
+| Login em conta pendente (legado) **com a senha certa** | **403**, nenhum token, nenhum cookie |
 | Login em conta pendente com a senha errada | **401** com a mensagem genérica |
 | E-mail já cadastrado tentando se cadastrar | **200 igual**, nada gravado, conta original intacta |
 | Operacional / Financeiro / Cliente lendo `GET /users` | **403** |
@@ -64,13 +71,13 @@ Formulário público na tela de login (nome, e-mail e senha) + fila de liberaç�
 | Liberar como Cliente com e-mail de cliente existente | reaproveita o cadastro, não duplica |
 | Recusar | linha apagada, e-mail livre para novo cadastro, auditoria preservada |
 
-### O sino avisa e leva até a fila
+### O sino avisa e leva até a lista de acessos
 
 | Verificação | Resultado |
 |---|---|
-| Cadastro novo | aviso `cadastro_pendente` para quem tem `user:update` |
+| Cadastro novo | aviso `cliente_cadastrado` para quem tem `user:update` |
 | Operacional / Financeiro / Cliente | **não** recebem o aviso |
-| Corpo do aviso | nome e e-mail de quem pediu |
+| Corpo do aviso | nome e e-mail de quem se cadastrou |
 | Destino do clique | `/operacional/configuracoes?aba=permissoes` |
 | Cliente clicando um aviso qualquer | nunca cai em rota interna (`notificationPath`) |
 | Liberar ou recusar | aviso marcado como lido, **inclusive dos outros admins** |

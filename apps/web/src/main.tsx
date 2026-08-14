@@ -5,7 +5,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './App';
 import './index.css';
-import { ApiRequestError } from './lib/api';
+import { ApiRequestError, TIMEOUT_CODE } from './lib/api';
 import { AuthProvider } from './lib/auth';
 import { FeedbackProvider } from './lib/feedback';
 
@@ -21,6 +21,12 @@ const queryClient = new QueryClient({
       gcTime: 5 * 60_000,
       refetchOnWindowFocus: false,
       retry: (failureCount, error) => {
+        // Teto de espera estourado é rede, não resposta: vale tentar de novo.
+        // Vem antes do corte por status porque `TIMEOUT` tem status 0, e cairia
+        // no ramo de 4xx sem nunca ser repetido.
+        if (error instanceof ApiRequestError && error.code === TIMEOUT_CODE) {
+          return failureCount < 2;
+        }
         // 4xx é decisão do servidor: repetir não muda a resposta.
         if (error instanceof ApiRequestError && error.status < 500) return false;
         return failureCount < 2;

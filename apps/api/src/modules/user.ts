@@ -19,6 +19,7 @@
 
 import {
   approveUserBodySchema,
+  changeRoleBodySchema,
   idParamSchema,
   listUserQuerySchema,
   okSchema,
@@ -33,6 +34,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { recordChange } from '../lib/changefeed';
 import { badRequest, notFound } from '../lib/errors';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
+import { resolveClientForUser } from '../lib/client-link';
 import { type Db, type Prisma, prisma } from '../lib/prisma';
 import { requirePermission, requireUser } from '../plugins/rbac';
 
@@ -178,47 +180,16 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const updated = await prisma.$transaction(async (tx) => {
-        let linkedClientId: string | null = null;
-
-        if (role === 'cliente') {
-          if (clientId === undefined) {
-            /**
-             * Reaproveita o cadastro que já existir com este e-mail.
-             *
-             * O caso comum é o cliente já estar na base (cadastrado pelo
-             * operacional) e só agora pedir acesso ao portal. Criar um segundo
-             * `Client` com o mesmo e-mail partiria o histórico de viagens e
-             * cobranças dele em dois, e o portal mostraria metade.
-             */
-            const existing = await tx.client.findFirst({
-              where: { email: target.email, deletedAt: null },
-              select: { id: true },
-            });
-
-            if (existing) {
-              linkedClientId = existing.id;
-            } else {
-              const client = await tx.client.create({
-                data: { name: target.name, email: target.email },
-                select: { id: true },
-              });
-              linkedClientId = client.id;
-
-              await recordChange(
+        // Só o perfil Cliente tem escopo por linha; os internos veem tudo, então
+        // vínculo com cliente para eles seria um campo que não significa nada.
+        const linkedClientId =
+          role === 'cliente'
+            ? await resolveClientForUser(
                 tx,
-                { entity: 'client', entityId: client.id, action: 'created' },
+                { name: target.name, email: target.email, clientId },
                 admin.id,
-              );
-            }
-          } else {
-            const chosen = await tx.client.findFirst({
-              where: { id: clientId, deletedAt: null },
-              select: { id: true },
-            });
-            if (!chosen) throw notFound('Cliente');
-            linkedClientId = chosen.id;
-          }
-        }
+              )
+            : null;
 
         const row = await tx.user.update({
           where: { id: target.id },
@@ -269,6 +240,135 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
    * notificação, viagem ou cobrança apontando para ela. O `AuditLog` guarda quem
    * era — e a coluna é `ON DELETE SET NULL`, então o registro sobrevive à linha.
    */
+  // ----------------------------------------------------------- trocar papel
+  /**
+   * Muda o papel de uma conta ATIVA.
+   *
+   * O autocadastro entra como `cliente` (o de menor alcance) e é aqui que o
+   * administrador sobe alguém para Operacional, Financeiro ou Administrador.
+   * Separado de `/approve` porque aquela rota exige `status === 'pendente'`: são
+   * momentos distintos da vida da conta, e juntar os dois faria uma delas mentir
+   * sobre o estado que aceita.
+   *
+   * Duas travas que não são detalhe:
+   *
+   * 1. **Ninguém troca o próprio papel.** Um administrador que se rebaixasse por
+   *    engano perderia o acesso que conserta o engano.
+   * 2. **O último administrador não pode ser rebaixado.** Sem isso, uma conta
+   *    trocada por descuido deixa o sistema sem ninguém que possa mexer em
+   *    permissão — e não há tela que resolva, só banco.
+   */
+  route.patch(
+    '/:id/role',
+    {
+      preValidation: requirePermission('user:update'),
+      schema: {
+        params: idParamSchema,
+        body: changeRoleBodySchema,
+        response: { 200: userSchema },
+      },
+    },
+    async (request) => {
+      const admin = requireUser(request);
+      const { id } = request.params;
+      const { role, clientId } = request.body;
+
+      if (id === admin.id) {
+        throw badRequest(
+          'Você não pode trocar o próprio papel. Peça a outro administrador.',
+        );
+      }
+
+      const target = await prisma.user.findFirst({
+        where: { id, deletedAt: null },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          status: true,
+          clientId: true,
+          role: { select: { key: true } },
+        },
+      });
+      if (!target) throw notFound('Usuário');
+
+      if (target.status === 'pendente') {
+        throw badRequest('Este cadastro ainda não foi liberado. Use a liberação de acesso.');
+      }
+
+      if (role !== 'cliente' && clientId !== undefined) {
+        throw badRequest('Vínculo com cliente só se aplica ao papel Cliente.');
+      }
+
+      const roleRow = await prisma.role.findUnique({ where: { key: role }, select: { id: true } });
+      if (!roleRow) throw badRequest(`O papel "${role}" não está configurado.`);
+
+      if (target.role.key === 'admin' && role !== 'admin') {
+        /**
+         * Conta ativa, não excluída, com papel `admin` — e diferente desta.
+         *
+         * Contar antes de gravar, não depois: verificar o estrago com a
+         * transação já aplicada só serve para descobrir que ele aconteceu.
+         */
+        const outrosAdmins = await prisma.user.count({
+          where: {
+            id: { not: target.id },
+            deletedAt: null,
+            status: 'ativo',
+            role: { key: 'admin' },
+          },
+        });
+
+        if (outrosAdmins === 0) {
+          throw badRequest(
+            'Este é o único administrador ativo. Promova outra pessoa antes de mudar o papel deste.',
+          );
+        }
+      }
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const linkedClientId =
+          role === 'cliente'
+            ? await resolveClientForUser(
+                tx,
+                { name: target.name, email: target.email, clientId },
+                admin.id,
+              )
+            : null;
+
+        const row = await tx.user.update({
+          where: { id: target.id },
+          data: { roleId: roleRow.id, clientId: linkedClientId },
+          select: userSelect,
+        });
+
+        await recordChange(tx, { entity: 'user', entityId: row.id, action: 'updated' }, admin.id);
+
+        await tx.auditLog.create({
+          data: {
+            userId: admin.id,
+            action: 'user.change_role',
+            entity: 'user',
+            entityId: row.id,
+            before: { role: target.role.key, clientId: target.clientId },
+            after: { role, clientId: linkedClientId },
+            ip: request.ip,
+            userAgent: request.headers['user-agent']?.slice(0, 255) ?? null,
+          },
+        });
+
+        return row;
+      });
+
+      request.log.info(
+        { userId: updated.id, de: target.role.key, para: role, por: admin.id },
+        'papel alterado',
+      );
+
+      return toUserDTO(updated);
+    },
+  );
+
   route.post(
     '/:id/reject',
     {

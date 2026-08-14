@@ -112,6 +112,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
   cobranca_vencida: 'Cobrança vencida',
   pagamento_recebido: 'Pagamento recebido',
   cadastro_pendente: 'Novo cadastro aguardando liberação',
+  cliente_cadastrado: 'Novo cliente se cadastrou',
 };
 
 /** Composição do custo da tarifa — protótipo: `COST_FIELDS`. */

@@ -104,12 +104,22 @@ export const emailSchema = z.string().trim().toLowerCase().email('E-mail inváli
  * Vale para a troca de senha E para o autocadastro. Duplicar a regra entre os
  * dois seria a forma mais fácil de o cadastro aceitar uma senha que a troca
  * recusa — e o usuário descobrir isso só no primeiro acesso.
+ *
+ * **Sem exigência de tamanho nem de composição, por decisão do produto:** o
+ * cadastro é aberto na home e qualquer atrito ali custa cliente. O `min(1)` só
+ * impede senha vazia, que não é uma senha fraca — é conta sem senha, e o login
+ * dela passaria com o campo em branco.
+ *
+ * O `max(128)` fica porque `bcrypt` ignora tudo além de 72 bytes: sem um teto, o
+ * sistema aceitaria uma senha longa dando a impressão de que os caracteres
+ * finais contam, quando não contam.
+ *
+ * O que sustenta a conta agora é o que já existe do lado do servidor: hash
+ * `bcrypt` com 12 rounds, bloqueio por tentativa (5 erros, 15 min) e limite de
+ * requisição. Vale saber que uma senha curta cai por força bruta offline se o
+ * banco vazar — o bloqueio protege o login, não o hash.
  */
-export const passwordSchema = z
-  .string()
-  .min(10, 'A senha precisa de pelo menos 10 caracteres')
-  .max(128)
-  .refine((v) => /[a-zA-Z]/.test(v) && /\d/.test(v), 'Use ao menos uma letra e um número');
+export const passwordSchema = z.string().min(1, 'Informe a senha').max(128);
 
 export const loginBodySchema = z.object({
   email: emailSchema,
@@ -312,6 +322,20 @@ export const approveUserBodySchema = z.object({
   clientId: idSchema.optional(),
 });
 export type ApproveUserBody = z.infer<typeof approveUserBodySchema>;
+
+/**
+ * Troca do papel de uma conta que JÁ está ativa.
+ *
+ * O autocadastro entra como `cliente`, e é por aqui que o administrador sobe
+ * alguém para Operacional, Financeiro ou Administrador — ou desce de volta.
+ *
+ * Mesmo corpo da liberação, e de propósito: são a mesma decisão ("que papel esta
+ * pessoa tem") em dois momentos diferentes da vida da conta. `clientId` só faz
+ * sentido para o papel `cliente`; omitido, o cadastro de cliente é resolvido pelo
+ * e-mail, reaproveitando o que já existir.
+ */
+export const changeRoleBodySchema = approveUserBodySchema;
+export type ChangeRoleBody = z.infer<typeof changeRoleBodySchema>;
 
 // ============================================================================
 //  CLIENTES
