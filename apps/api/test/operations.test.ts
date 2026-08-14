@@ -179,10 +179,49 @@ describe('autenticação', () => {
     expect(reuso.statusCode).toBe(401);
   });
 
-  it('rejeita senha nova fraca na troca', async () => {
+  /**
+   * A troca segue a MESMA regra do cadastro, que hoje não exige tamanho nem
+   * composição (`passwordSchema` em @acm/shared).
+   *
+   * O caso continua aqui, invertido, em vez de ter sido apagado: as duas rotas
+   * compartilham o schema justamente para não divergirem, e uma delas voltar a
+   * apertar sozinha é o defeito que este teste pega. Quem se cadastra com uma
+   * senha que a troca depois recusa só descobre isso na hora de trocar.
+   */
+  it('aceita senha curta na troca, igual ao cadastro', async () => {
     const response = await post(op, '/api/auth/change-password', {
       currentPassword: 'SenhaDeTeste123',
-      newPassword: 'curta',
+      newPassword: 'x',
+    });
+    expect(response.statusCode).toBe(200);
+
+    // A senha nova vale de verdade: entrar com ela é o que prova.
+    const entrada = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: op.email, password: 'x' },
+    });
+    expect(entrada.statusCode).toBe(200);
+
+    /**
+     * Devolve a senha ao valor de origem antes de sair.
+     *
+     * `op` é criado UMA vez no `beforeAll` e compartilhado por todo o arquivo —
+     * `resetData` limpa dados operacionais, não usuários. Deixar a senha trocada
+     * faria os casos seguintes falharem por um motivo que nada tem a ver com o
+     * que eles testam, e a suíte acusaria o defeito errado.
+     */
+    const restaura = await post(op, '/api/auth/change-password', {
+      currentPassword: 'x',
+      newPassword: 'SenhaDeTeste123',
+    });
+    expect(restaura.statusCode).toBe(200);
+  });
+
+  it('rejeita senha nova vazia na troca', async () => {
+    const response = await post(op, '/api/auth/change-password', {
+      currentPassword: 'SenhaDeTeste123',
+      newPassword: '',
     });
     expect(response.statusCode).toBe(422);
   });

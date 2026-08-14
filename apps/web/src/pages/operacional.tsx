@@ -1594,11 +1594,7 @@ function SettingsPermissions(): JSX.Element {
         const { [updated.id]: _, ...rest } = current;
         return rest;
       });
-      notify(
-        'success',
-        'Perfil alterado',
-        `${updated.name} agora é ${ROLE_LABELS[updated.role]}.`,
-      );
+      notify('success', 'Perfil alterado', `${updated.name} agora é ${ROLE_LABELS[updated.role]}.`);
     },
     onError: (e) => {
       notifyError(e);

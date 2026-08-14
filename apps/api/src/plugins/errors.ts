@@ -150,7 +150,10 @@ export const errorsPlugin = fp(
         void reply.status(statusCode).send({
           error: {
             code,
-            message: error instanceof Error && error.message !== '' ? error.message : 'Requisição inválida.',
+            message:
+              error instanceof Error && error.message !== ''
+                ? error.message
+                : 'Requisição inválida.',
           },
         });
         return;

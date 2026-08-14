@@ -274,9 +274,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       const { role, clientId } = request.body;
 
       if (id === admin.id) {
-        throw badRequest(
-          'Você não pode trocar o próprio papel. Peça a outro administrador.',
-        );
+        throw badRequest('Você não pode trocar o próprio papel. Peça a outro administrador.');
       }
 
       const target = await prisma.user.findFirst({
