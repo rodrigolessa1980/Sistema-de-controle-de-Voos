@@ -22,7 +22,7 @@ honesto — o que roda, o que está bloqueado e o que descobri no caminho.
 | **7 · Produção** | **No ar.** Chaves cadastradas, CI e Deploy verdes, healthchecks e login verificados. Falta HTTPS, rotação de senhas e o required reviewer |
 
 Números: 23 tabelas, 16 módulos de API, ~54 rotas, 19 telas, 52 permissões,
-**194 testes** (69 unitários + 25 de autorização + 70 de operações + 30 de
+**194 testes** (69 unitários + 27 de autorização + 68 de operações + 30 de
 cadastro e liberação de acesso). Bundle do frontend: 258 kB (61 kB gzip).
 
 ---
