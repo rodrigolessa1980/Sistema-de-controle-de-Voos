@@ -27,6 +27,7 @@ import { recordChanges } from '../lib/changefeed';
 import { nextCode } from '../lib/codes';
 import { conflict, notFound, unprocessable } from '../lib/errors';
 import { enqueueEmail, requestEmailPayload } from '../lib/mailer';
+import { findUsersWithPermission, type NotifyRecipient } from '../lib/notify';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
 import { type Prisma, prisma, type Db } from '../lib/prisma';
 import {
@@ -382,31 +383,11 @@ interface NotifyInput {
  * férias, ninguém seria avisado. Amarrando em `request:review`, quem entrar no
  * perfil passa a receber automaticamente, sem deploy.
  *
- * Um `deny` explícito no usuário tira ele da lista — a mesma regra de
- * precedência do RBAC (deny vence).
+ * A consulta em si mora em `lib/notify.ts`, porque o autocadastro precisa da
+ * mesma coisa com outra chave de permissão.
  */
-async function findApprovers(tx: Db): Promise<{ id: string; email: string; name: string }[]> {
-  const users = await tx.user.findMany({
-    where: {
-      status: 'ativo',
-      deletedAt: null,
-      role: { permissions: { some: { permission: { key: 'request:review' } } } },
-    },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      permissionOverrides: {
-        where: { permission: { key: 'request:review' }, effect: 'deny' },
-        select: { effect: true },
-      },
-    },
-  });
-
-  return users
-    .filter((u) => u.permissionOverrides.length === 0)
-    .map((u) => ({ id: u.id, email: u.email, name: u.name }));
-}
+const findApprovers = (tx: Db): Promise<NotifyRecipient[]> =>
+  findUsersWithPermission(tx, 'request:review');
 
 /**
  * Dispara os DOIS canais: sino no sistema e e-mail.

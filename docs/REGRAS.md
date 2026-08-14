@@ -206,10 +206,30 @@ A única exceção é deliberada: a mensagem "aguardando liberação" aparece **
 de a senha ser conferida. Quem chega ali já provou ser o dono da senha, e merece
 saber por que não entra em vez de ficar tentando uma senha que está certa.
 
+### Quem é avisado
+
+O destinatário do aviso no sino é resolvido por PERMISSÃO (`user:update`), nunca
+por pessoa nem por papel escrito no código — a mesma regra do aviso de solicitação
+nova (§13 do PLANO). A consulta mora em `apps/api/src/lib/notify.ts` e é a mesma
+para os dois casos, porque duas cópias seriam duas chances de uma esquecer que
+`deny` vence.
+
+Se ninguém tiver a permissão — o único admin foi desativado —, o cadastro é
+gravado e um `log.error` registra que ele está numa fila sem leitor. A resposta ao
+visitante continua igual: como está a operação por dentro não é assunto de quem
+está de fora.
+
 ### Onde isto está provado
 
-`apps/api/test/registration.test.ts` — 25 casos, com destaque para os três que
+`apps/api/test/registration.test.ts` — 30 casos, com destaque para os três que
 seguram a regra: login com a senha certa em conta pendente devolve 403 e nenhum
 token; o operacional recebe 403 ao tentar liberar; e papel fora do enum é recusado
 pelo contrato antes de qualquer escrita. A matriz por perfil das rotas `/users/*`
 está em `authorization.test.ts`.
+
+O destino do clique no sino está em `packages/shared/src/permissions.test.ts`. Um
+desses casos — `todo destino interno é uma rota que o papel alcança` — nasceu de um
+defeito real: a primeira versão de `notificationPath` mandava o operacional para
+`/financeiro/cobrancas`, que exige `charge:create`, permissão que ele não tem. O
+teste compara cada destino com o MENU do papel, o que garante de uma vez a
+permissão e a chance de a pessoa reencontrar a tela.

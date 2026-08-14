@@ -174,7 +174,45 @@ Estes pontos continuam abertos e valem mais que a conveniência de publicar hoje
 3. **Usuário MySQL dedicado**, com privilégio só no schema `aircharter`.
 4. **Fechar a 3306 para o mundo.** As migrations rodam de dentro do container,
    então o acesso externo pode ser bloqueado por completo.
-5. **HTTPS.** Hoje o deploy expõe HTTP puro em `:1700`. O cookie de refresh sai
-   sem a flag `Secure` porque ela quebraria em HTTP — o que significa que a
-   sessão trafega em claro. Um proxy com TLS (Caddy ou nginx com Let's Encrypt)
-   na frente resolve, e aí `secure: isProduction` passa a valer de fato.
+5. **HTTPS.** Hoje o deploy expõe HTTP puro em `:1700`, e por isso o cookie de
+   refresh sai sem a flag `Secure` (`secure: isHttps`, derivado de
+   `WEB_BASE_URL`) — o que significa que a sessão trafega em claro. Um proxy com
+   TLS (Caddy ou nginx com Let's Encrypt) na frente resolve, e a flag volta
+   sozinha assim que `WEB_BASE_URL` virar `https://`: não há chave para lembrar
+   de virar.
+
+---
+
+## 5. Dois defeitos que só a produção encontrou
+
+Ambos derrubados no commit que registrou esta seção. Nenhum dos dois aparecia no
+CI, e nenhum dos dois derrubou o processo — o `docker ps` mostrava
+`Up (healthy)`, `/api/health` e `/api/ready` respondiam 200, e o deploy ficou
+verde enquanto o sistema estava inutilizável.
+
+**A sessão não sobrevivia a uma recarga.** `refreshCookieOptions` usava
+`secure: isProduction`. Em produção isso é `true`, e o navegador **descarta em
+silêncio** um cookie `Secure` recebido por HTTP. O `acm_refresh` nunca era
+gravado; `POST /api/auth/refresh` respondia 401 para sempre; a tela ficava em
+"Restaurando sessão…" e voltava para o login. Do lado do servidor não havia erro
+nenhum: o login era 200 e o `Set-Cookie` saía correto. Só o navegador sabia.
+`NODE_ENV` descreve o modo de execução, não o protocolo da porta — quem responde
+"é HTTPS?" é `WEB_BASE_URL`.
+
+**Todo `GET /api/notifications` respondia 500.** A migration que acrescenta
+`cadastro_pendente` ao ENUM foi aplicada **direto no banco de produção pela
+máquina local**, e o código que conhece esse valor não tinha sido publicado. Uma
+linha com o valor novo foi gravada em seguida (também pela máquina local), e o
+Prisma Client da imagem no ar passou a estufar em toda leitura:
+`Value 'cadastro_pendente' not found in enum 'NotificationType'`.
+
+A causa comum dos dois é a mesma, e é ela que vale corrigir: **o `.env` de
+desenvolvimento aponta `DATABASE_URL` para o banco de PRODUÇÃO.** Enquanto isso
+for verdade, `npm run prisma:migrate` migra a produção e `npm run dev` grava na
+produção — o banco anda na frente da imagem publicada, que é exatamente a ordem
+que quebra. Migration de produção tem um caminho só: o entrypoint da API, depois
+do build, com o código que a entende já dentro da imagem.
+
+O healthcheck do deploy não pega nada disso porque só pergunta se o processo
+subiu e se o banco responde. Uma verificação que fizesse login e lesse uma rota
+autenticada teria pegado os dois.

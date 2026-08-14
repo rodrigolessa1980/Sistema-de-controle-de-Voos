@@ -39,6 +39,7 @@ import {
 } from '../lib/auth';
 import { recordChange } from '../lib/changefeed';
 import { badRequest, forbidden, unauthorized } from '../lib/errors';
+import { findUsersWithPermission } from '../lib/notify';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireUser } from '../plugins/rbac';
 
@@ -264,6 +265,35 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           select: { id: true },
         });
 
+        /**
+         * Aviso no sino de quem pode liberar.
+         *
+         * Vai para quem tem `user:update` — não para "o admin". Se amanhã um
+         * segundo administrador entrar, ele passa a ser avisado sem deploy; e
+         * quem tiver a permissão suspensa por `deny` para de receber aviso de um
+         * trabalho que não pode mais fazer.
+         *
+         * `entity: 'user'` é o que o clique usa para chegar em
+         * Configurações → Permissões (`notificationPath` em @acm/shared).
+         *
+         * Na MESMA transação do usuário: se o insert falhar, o cadastro não
+         * existe. O contrário — cadastro sem aviso — seria um pedido esperando
+         * numa fila que ninguém sabe que encheu.
+         */
+        const approvers = await findUsersWithPermission(tx, 'user:update');
+        if (approvers.length > 0) {
+          await tx.notification.createMany({
+            data: approvers.map((approver) => ({
+              userId: approver.id,
+              type: 'cadastro_pendente' as const,
+              title: 'Novo cadastro aguardando liberação',
+              body: `${name} · ${email}`,
+              entity: 'user',
+              entityId: user.id,
+            })),
+          });
+        }
+
         // Sem `clientScopeId`: só perfis internos veem o evento. É o que faz a
         // fila de pendências do administrador aparecer sozinha, em 10 segundos.
         await recordChange(tx, { entity: 'user', entityId: user.id, action: 'created' }, user.id);
@@ -280,10 +310,28 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           },
         });
 
-        return user;
+        return { id: user.id, notified: approvers.length };
       });
 
-      request.log.info({ userId: created.id }, 'novo cadastro aguardando liberação');
+      request.log.info(
+        { userId: created.id, avisados: created.notified },
+        'novo cadastro aguardando liberação',
+      );
+
+      /**
+       * Ninguém com permissão para liberar.
+       *
+       * Acontece se o único admin for desativado. O cadastro fica gravado, mas
+       * dorme numa fila sem leitor — e como a resposta ao público é sempre a
+       * mesma, nada na tela denuncia isso. O log em nível `error` é o que dá para
+       * fazer sem contar ao visitante como está a operação por dentro.
+       */
+      if (created.notified === 0) {
+        request.log.error(
+          'cadastro pendente sem ninguém para liberar: nenhum usuário ativo com user:update',
+        );
+      }
+
       return response;
     },
   );

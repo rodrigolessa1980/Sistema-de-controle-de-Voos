@@ -12,7 +12,9 @@ import { ROLE_KEYS } from './enums';
 import {
   ALL_PERMISSIONS,
   NAV,
+  notificationPath,
   PERMISSIONS,
+  PERMISSIONS_PATH,
   permissionParts,
   resolvePermissions,
   ROLE_PERMISSIONS,
@@ -208,5 +210,49 @@ describe('navegação', () => {
     for (const item of NAV.cliente) {
       expect(item.path.startsWith('/cliente')).toBe(true);
     }
+  });
+});
+
+describe('destino do clique numa notificação', () => {
+  it('cadastro pendente leva à aba de liberação de acessos', () => {
+    expect(notificationPath('user', 'admin')).toBe(PERMISSIONS_PATH);
+    expect(PERMISSIONS_PATH).toContain('aba=permissoes');
+  });
+
+  it('nunca manda o cliente para uma tela interna', () => {
+    // O destino do cliente é o que segura a regra: um link para
+    // `/operacional/...` no sino dele levaria a "Acesso não permitido".
+    for (const entity of ['user', 'request', 'trip', 'charge', 'payment', 'client']) {
+      const to = notificationPath(entity, 'cliente');
+      if (to !== null) {
+        expect(to.startsWith('/cliente'), `${entity} -> ${to}`).toBe(true);
+      }
+    }
+  });
+
+  it('o cliente não recebe link para a tela de permissões', () => {
+    expect(notificationPath('user', 'cliente')).toBeNull();
+  });
+
+  it('todo destino interno é uma rota que o papel alcança', () => {
+    // Compara com o menu: se o destino não é uma tela do papel, o link cai numa
+    // rota que o `RequirePermission` recusa.
+    for (const role of ['operacional', 'financeiro', 'admin'] as const) {
+      const reachable = NAV[role].map((item) => item.path);
+
+      for (const entity of ['request', 'trip', 'charge', 'payment', 'client']) {
+        const to = notificationPath(entity, role);
+        if (to === null) continue;
+        expect(
+          reachable.some((path) => to === path || to.startsWith(`${path}?`)),
+          `${role}: ${entity} -> ${to} não está no menu do papel`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('entidade sem tela correspondente não vira link', () => {
+    expect(notificationPath('settings', 'admin')).toBeNull();
+    expect(notificationPath(null, 'admin')).toBeNull();
   });
 });

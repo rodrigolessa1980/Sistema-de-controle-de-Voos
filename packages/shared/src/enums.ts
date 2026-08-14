@@ -71,6 +71,7 @@ export const NOTIFICATION_TYPES = [
   'cobranca_criada',
   'cobranca_vencida',
   'pagamento_recebido',
+  'cadastro_pendente',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

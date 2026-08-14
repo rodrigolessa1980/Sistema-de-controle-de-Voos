@@ -86,6 +86,14 @@ liberação devolve uma mensagem explicando que o cadastro está na fila — e s
 depois de a senha estar correta, para a tela não virar um verificador de quem tem
 conta no sistema.
 
+**Aviso no sino.** Cada cadastro novo gera notificação para quem tem
+`user:update` — não para "o admin" nomeado: um segundo administrador passa a ser
+avisado sem deploy, e quem tiver a permissão suspensa para de receber. **O clique
+no aviso leva direto para a fila de liberação** (`?aba=permissoes`), e o aviso é
+marcado como lido assim que o pedido é liberado ou recusado, inclusive para os
+outros administradores — badge que continua vermelho depois de resolvido é badge
+que mente.
+
 **Liberação pelo administrador.** Em **Configurações → Permissões** (aba visível
 só para quem tem `user:read`, na prática o admin) fica a fila de cadastros. Para
 cada um, o administrador escolhe o **perfil** — Operacional, Financeiro, Cliente

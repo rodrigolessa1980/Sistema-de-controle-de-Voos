@@ -40,7 +40,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Calendar } from '../components/Calendar';
 import { PassengerList } from '../components/PassengersEditor';
@@ -1253,11 +1253,33 @@ function AircraftForm({
 //  CONFIGURAÇÕES
 // ============================================================================
 
-type ConfigTab = 'geral' | 'tarifas' | 'margem' | 'permissoes';
+const CONFIG_TABS = ['geral', 'tarifas', 'margem', 'permissoes'] as const;
+type ConfigTab = (typeof CONFIG_TABS)[number];
+
+const isConfigTab = (value: string | null): value is ConfigTab =>
+  value !== null && (CONFIG_TABS as readonly string[]).includes(value);
 
 export function OpConfiguracoes(): JSX.Element {
   const { can } = useAuth();
-  const [tab, setTab] = useState<ConfigTab>('geral');
+
+  /**
+   * A aba escolhida mora na URL (`?aba=permissoes`), não em `useState`.
+   *
+   * É o que permite ao clique no sino cair direto na fila de liberação — um
+   * `useState` só é alcançável por clique, e o aviso teria de mandar a pessoa
+   * para Configurações e pedir que ela achasse a aba sozinha. De brinde: o botão
+   * voltar funciona e dá para mandar o link para alguém.
+   */
+  const [params, setParams] = useSearchParams();
+  const tab: ConfigTab = isConfigTab(params.get('aba'))
+    ? (params.get('aba') as ConfigTab)
+    : 'geral';
+
+  const setTab = (next: ConfigTab): void => {
+    // `replace`: trocar de aba não empilha uma entrada nova no histórico, senão
+    // o voltar passeia pelas abas antes de sair da tela.
+    setParams(next === 'geral' ? {} : { aba: next }, { replace: true });
+  };
 
   /**
    * A aba Permissões só existe para quem tem `user:read` — na matriz de papéis,
@@ -1270,8 +1292,9 @@ export function OpConfiguracoes(): JSX.Element {
   const canManageUsers = can('user:read');
   const pendingCount = usePendingUserCount(canManageUsers);
 
-  // Papel rebaixado com a aba aberta: volta para Geral em vez de renderizar uma
-  // tela que o servidor vai negar.
+  // Sem permissão — inclusive quem digitou `?aba=permissoes` na mão ou guardou o
+  // link e depois foi rebaixado — cai em Geral, em vez de renderizar uma tela que
+  // o servidor vai negar de qualquer forma.
   const active: ConfigTab = tab === 'permissoes' && !canManageUsers ? 'geral' : tab;
 
   return (

@@ -96,7 +96,13 @@ export const ENTITY_INVALIDATIONS: Record<ChangeEntity, readonly (readonly strin
   block: [queryKeys.blocks, ['calendar'], ['availability-days'], queryKeys.dashboardOp],
   settings: [queryKeys.settings, queryKeys.trips],
   notification: [queryKeys.notifications],
-  // Liberar um cadastro pode criar um cliente novo (papel Cliente sem vínculo),
-  // então a lista de clientes cai junto.
-  user: [queryKeys.users, queryKeys.clients],
+  /**
+   * Liberar um cadastro pode criar um cliente novo (papel Cliente sem vínculo),
+   * então a lista de clientes cai junto.
+   *
+   * E as notificações também: um cadastro novo gera aviso no sino de quem libera,
+   * e um cadastro resolvido marca esse aviso como lido. Sem invalidar aqui, o
+   * pontinho vermelho só apareceria (ou só sumiria) na próxima recarga da página.
+   */
+  user: [queryKeys.users, queryKeys.clients, queryKeys.notifications],
 };

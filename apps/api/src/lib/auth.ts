@@ -16,7 +16,7 @@ import type { Permission, RoleKey } from '@acm/shared';
 import { compare, hash as bcryptHash } from 'bcryptjs';
 import { jwtVerify, SignJWT } from 'jose';
 
-import { env, isProduction } from '../env';
+import { env, isHttps } from '../env';
 import { unauthorized } from './errors';
 
 const accessSecret = new TextEncoder().encode(env.JWT_ACCESS_SECRET);
@@ -161,9 +161,31 @@ export function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * Opções do cookie de refresh.
+ *
+ * `secure: isHttps`, NÃO `isProduction`. A diferença não é estética: o navegador
+ * DESCARTA em silêncio um cookie marcado `Secure` que chegou por HTTP. Produção
+ * hoje é HTTP puro na :1700 (o TLS é a pendência §4.5 de `docs/DEPLOY.md`), então
+ * `acm_refresh` nunca chegava a ser gravado — nenhum erro no servidor, nenhum
+ * erro no console, e o `Set-Cookie` saindo bonito na resposta do login.
+ *
+ * O efeito para quem usa: entrava normalmente, e a sessão morria junto com o
+ * access token de 15 minutos ou na primeira recarga da página, o que viesse
+ * antes. Como `POST /api/auth/refresh` respondia 401 sem cookie, a tela ficava
+ * em "Restaurando sessão…" e voltava para o login — sem nada indicando por quê.
+ *
+ * Amarrando em `WEB_BASE_URL`, o dia em que entrar um proxy com TLS na frente a
+ * flag volta sozinha: ninguém precisa lembrar de virar uma chave, que é
+ * exatamente o tipo de coisa de que ninguém lembra.
+ *
+ * Enquanto a produção for HTTP, o refresh token trafega em claro. Isso é
+ * consequência de não haver TLS, não desta linha — com `Secure` ligado ele
+ * simplesmente não existia, e a autenticação não funcionava.
+ */
 export const refreshCookieOptions = {
   httpOnly: true,
-  secure: isProduction,
+  secure: isHttps,
   sameSite: 'lax',
   path: '/api/auth',
   maxAge: REFRESH_TTL_SECONDS,

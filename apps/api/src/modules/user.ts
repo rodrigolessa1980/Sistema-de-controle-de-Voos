@@ -33,7 +33,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { recordChange } from '../lib/changefeed';
 import { badRequest, notFound } from '../lib/errors';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
-import { type Prisma, prisma } from '../lib/prisma';
+import { type Db, type Prisma, prisma } from '../lib/prisma';
 import { requirePermission, requireUser } from '../plugins/rbac';
 
 const userSelect = {
@@ -64,6 +64,26 @@ function toUserDTO(row: UserRow): User {
     createdAt: row.createdAt.toISOString(),
     lastLoginAt: row.lastLoginAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * Fecha o aviso do sino de um cadastro que acabou de ser resolvido.
+ *
+ * Marca como lida a notificação de TODOS os aprovadores, não só de quem clicou:
+ * o pedido é um só, e depois de liberado ou recusado não há nada a fazer com ele.
+ * Sem isto, os outros administradores continuariam com o pontinho vermelho e
+ * abririam a fila para encontrá-la vazia — um badge que mente é pior que badge
+ * nenhum.
+ *
+ * `updateMany` sem `userId` no `where` é seguro aqui porque o filtro é o tipo
+ * mais o `entityId` do cadastro: não existe notificação de outro assunto que
+ * casaria.
+ */
+async function markRegistrationHandled(tx: Db, userId: string): Promise<void> {
+  await tx.notification.updateMany({
+    where: { type: 'cadastro_pendente', entity: 'user', entityId: userId, readAt: null },
+    data: { readAt: new Date() },
+  });
 }
 
 export async function userRoutes(app: FastifyInstance): Promise<void> {
@@ -213,6 +233,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
           select: userSelect,
         });
 
+        await markRegistrationHandled(tx, row.id);
         await recordChange(tx, { entity: 'user', entityId: row.id, action: 'updated' }, admin.id);
 
         await tx.auditLog.create({
@@ -282,6 +303,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
           },
         });
 
+        await markRegistrationHandled(tx, target.id);
         await tx.user.delete({ where: { id: target.id } });
 
         await recordChange(

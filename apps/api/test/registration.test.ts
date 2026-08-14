@@ -221,6 +221,137 @@ describe('login antes da liberação', () => {
   });
 });
 
+describe('aviso no sino', () => {
+  /** O sino de um usuário, como o front o lê. */
+  const bell = (user: TestUser) =>
+    app.inject({ method: 'GET', url: '/api/notifications', headers: auth(user) });
+
+  it('avisa quem pode liberar, e só quem pode', async () => {
+    const { email } = await register({ name: 'Ana Ribeiro' });
+
+    const doAdmin = (await bell(admin)).json<{
+      items: { type: string; title: string; body: string | null }[];
+      unread: number;
+    }>();
+    const aviso = doAdmin.items.find((i) => i.type === 'cadastro_pendente');
+
+    expect(aviso).toBeDefined();
+    expect(doAdmin.unread).toBeGreaterThan(0);
+    // O corpo diz QUEM pediu: sem isso o admin tem de abrir a fila só para saber
+    // se o aviso interessa.
+    expect(aviso?.body).toContain('Ana Ribeiro');
+    expect(aviso?.body).toContain(email);
+
+    // O destinatário é escolhido por permissão (`user:update`), não por papel.
+    // Operacional e cliente não podem liberar, então não são avisados.
+    for (const outro of [operacional, cliente]) {
+      const itens = (await bell(outro)).json<{ items: { type: string }[] }>().items;
+      expect(
+        itens.some((i) => i.type === 'cadastro_pendente'),
+        outro.email,
+      ).toBe(false);
+    }
+  });
+
+  it('o aviso carrega o destino do clique', async () => {
+    const { email } = await register();
+    const pendente = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { id: true },
+    });
+
+    const aviso = await prisma.notification.findFirstOrThrow({
+      where: { type: 'cadastro_pendente', userId: admin.id },
+      select: { entity: true, entityId: true },
+    });
+
+    // `entity` + `entityId` são o que o front traduz em rota (`notificationPath`).
+    // Sem eles o aviso é texto morto e a pessoa tem de achar a tela sozinha.
+    expect(aviso.entity).toBe('user');
+    expect(aviso.entityId).toBe(pendente.id);
+  });
+
+  it('liberar fecha o aviso', async () => {
+    const { email } = await register();
+    const pendente = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { id: true },
+    });
+
+    expect((await bell(admin)).json<{ unread: number }>().unread).toBeGreaterThan(0);
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/users/${pendente.id}/approve`,
+      headers: auth(admin),
+      payload: { role: 'operacional' },
+    });
+
+    // Badge que continua vermelho depois de o pedido ser resolvido é badge que
+    // mente: o admin abre a fila e não encontra nada.
+    const naoLidas = await prisma.notification.count({
+      where: { type: 'cadastro_pendente', entityId: pendente.id, readAt: null },
+    });
+    expect(naoLidas).toBe(0);
+  });
+
+  it('recusar também fecha o aviso', async () => {
+    const { email } = await register();
+    const pendente = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { id: true },
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/users/${pendente.id}/reject`,
+      headers: auth(admin),
+    });
+
+    const naoLidas = await prisma.notification.count({
+      where: { type: 'cadastro_pendente', entityId: pendente.id, readAt: null },
+    });
+    expect(naoLidas).toBe(0);
+
+    // A notificação sobrevive ao delete do usuário: `entityId` é só VARCHAR, sem
+    // foreign key. O histórico do sino não é apagado por uma recusa.
+    expect(
+      await prisma.notification.count({
+        where: { type: 'cadastro_pendente', entityId: pendente.id },
+      }),
+    ).toBeGreaterThan(0);
+  });
+
+  it('um cadastro recusado não deixa aviso pendurado para os outros', async () => {
+    // Cenário do segundo administrador: os dois recebem o mesmo aviso, um
+    // resolve, e o outro não pode continuar com o pontinho vermelho.
+    const segundoAdmin = await createUser(app, 'admin', {
+      email: `admin2-${Math.random().toString(36).slice(2, 8)}@teste.local`,
+    });
+
+    const { email } = await register();
+    const pendente = await prisma.user.findUniqueOrThrow({
+      where: { email },
+      select: { id: true },
+    });
+
+    expect(
+      await prisma.notification.count({
+        where: { type: 'cadastro_pendente', entityId: pendente.id },
+      }),
+    ).toBe(2);
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/users/${pendente.id}/approve`,
+      headers: auth(admin),
+      payload: { role: 'financeiro' },
+    });
+
+    expect((await bell(segundoAdmin)).json<{ unread: number }>().unread).toBe(0);
+  });
+});
+
 describe('fila de liberação', () => {
   it('só quem tem user:read enxerga a lista', async () => {
     await register();

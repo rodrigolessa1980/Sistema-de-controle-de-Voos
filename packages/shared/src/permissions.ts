@@ -414,3 +414,75 @@ export const HOME_PATH: Record<RoleKey, string> = {
   cliente: '/cliente',
   admin: '/operacional',
 };
+
+/** Endereço da aba de liberação de acessos, com a aba já selecionada. */
+export const PERMISSIONS_PATH = '/operacional/configuracoes?aba=permissoes';
+
+/**
+ * Para onde o clique numa notificação leva.
+ *
+ * `Notification.entity` + `entityId` existem no schema desde o começo com este
+ * propósito ("destino do clique"), e até agora nada os usava — o sino mostrava
+ * texto morto. O aviso que não leva a lugar nenhum obriga a pessoa a lembrar
+ * onde a coisa mora, e é o tipo de detalhe que faz um recurso parecer
+ * inacabado.
+ *
+ * Por PAPEL, e não "interno vs. cliente": a mesma cobrança fica em
+ * `/financeiro/cobrancas` para o financeiro, em `/financeiro/recebiveis` para o
+ * admin (é o que o menu dele tem) e em `/cliente/financeiro` para o cliente. O
+ * operacional não tem tela de cobrança nenhuma — ele LÊ cobrança pela API, para
+ * ver pendência antes de agendar, mas não tem a página; então não ganha link.
+ *
+ * A primeira versão disto tratava só "cliente ou não" e mandava o operacional
+ * para `/financeiro/cobrancas`, que exige `charge:create` — permissão que ele não
+ * tem. O clique cairia em "Acesso não permitido". O teste
+ * `todo destino interno é uma rota que o papel alcança` existe por causa desse
+ * erro: todo destino aqui tem de ser um item do MENU daquele papel, o que garante
+ * de uma vez a permissão e a chance de a pessoa reencontrar a tela depois.
+ *
+ * Papel ausente no mapa = sem tela correspondente; o item aparece no sino, mas
+ * não clicável. Melhor que um link que dá 403.
+ */
+const NOTIFICATION_TARGETS: Record<string, Partial<Record<RoleKey, string>>> = {
+  // Só quem tem `user:read` recebe este aviso, o que na matriz é só o admin.
+  user: { admin: PERMISSIONS_PATH },
+
+  request: {
+    operacional: '/operacional/solicitacoes',
+    admin: '/operacional/solicitacoes',
+    // O cliente não tem lista de solicitações; a página inicial mostra as
+    // últimas.
+    cliente: '/cliente',
+  },
+
+  trip: {
+    operacional: '/operacional/viagens',
+    admin: '/operacional/viagens',
+    cliente: '/cliente/viagens',
+  },
+
+  charge: {
+    financeiro: '/financeiro/cobrancas',
+    admin: '/financeiro/recebiveis',
+    cliente: '/cliente/financeiro',
+  },
+
+  payment: {
+    financeiro: '/financeiro/pagamentos',
+    admin: '/financeiro/recebiveis',
+    cliente: '/cliente/financeiro',
+  },
+
+  client: {
+    operacional: '/operacional/clientes',
+    financeiro: '/financeiro/clientes',
+    admin: '/operacional/clientes',
+    cliente: '/cliente/perfil',
+  },
+};
+
+/** Destino do clique, ou `null` quando o papel não tem tela para a entidade. */
+export function notificationPath(entity: string | null, role: RoleKey): string | null {
+  if (entity === null) return null;
+  return NOTIFICATION_TARGETS[entity]?.[role] ?? null;
+}

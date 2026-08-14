@@ -122,6 +122,37 @@ describe('autenticação', () => {
     expect(raw).toContain('HttpOnly');
   });
 
+  /**
+   * A flag `Secure` segue o PROTOCOLO de `WEB_BASE_URL`, não o `NODE_ENV`.
+   *
+   * Este teste existe por causa de uma queda em produção: com `secure` amarrado
+   * em `isProduction`, o servidor mandava `Set-Cookie: ...; Secure` por HTTP, o
+   * navegador descartava o cookie sem avisar ninguém, e `POST /auth/refresh`
+   * respondia 401 para sempre — a sessão morria na primeira recarga e a tela
+   * ficava em "Restaurando sessão…" antes de voltar para o login.
+   *
+   * Nada disso aparecia no log do servidor: do lado dele, o login foi 200 e o
+   * cookie foi enviado. Só o navegador sabia. Por isso a asserção é no header, e
+   * não numa constante de configuração — é o header que o navegador julga.
+   *
+   * O ambiente de teste roda com o `WEB_BASE_URL` padrão (`http://localhost:1700`),
+   * que é o mesmo caso da produção de hoje.
+   */
+  it('o cookie de refresh não vem Secure quando o site é HTTP', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: op.email, password: 'SenhaDeTeste123' },
+    });
+
+    const cookie = response.headers['set-cookie'];
+    const raw = Array.isArray(cookie) ? cookie.join(';') : String(cookie);
+
+    expect(process.env['WEB_BASE_URL'] ?? 'http://localhost:1700').toMatch(/^http:\/\//);
+    expect(raw).toContain('acm_refresh=');
+    expect(raw).not.toContain('Secure');
+  });
+
   it('o refresh é rotativo: o token usado é revogado', async () => {
     const login = await app.inject({
       method: 'POST',

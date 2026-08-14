@@ -123,6 +123,19 @@ export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 
 /**
+ * O site é servido por HTTPS de verdade?
+ *
+ * Quem responde é `WEB_BASE_URL`, porque é o endereço por onde o NAVEGADOR
+ * chega — e é o navegador que decide se aceita um cookie `Secure`. `NODE_ENV`
+ * não sabe disso: descreve o modo de execução, não o protocolo da porta.
+ *
+ * Existe para o cookie de refresh (`refreshCookieOptions`). Amarrar aquela flag
+ * em `isProduction` parecia mais seguro e derrubava a sessão de todo mundo: ver
+ * a explicação em `lib/auth.ts`.
+ */
+export const isHttps = env.WEB_BASE_URL.startsWith('https://');
+
+/**
  * Sem chave de API o envio não acontece de verdade — a fila grava e o worker
  * registra no log. É o estado atual do projeto: o provedor ainda não foi
  * escolhido (docs/PLANO.md §13.3).

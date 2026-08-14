@@ -21,9 +21,9 @@ honesto — o que roda, o que está bloqueado e o que descobri no caminho.
 | **6 · Tempo real** | `ChangeFeed` · `GET /api/changes` · polling de 10s · sino · fila de e-mail · 6 jobs |
 | **7 · Produção** | **No ar.** Chaves cadastradas, CI e Deploy verdes, healthchecks e login verificados. Falta HTTPS, rotação de senhas e o required reviewer |
 
-Números: 23 tabelas, 15 módulos de API, ~50 rotas, 19 telas, 52 permissões,
-**156 testes** (64 unitários + 25 de autorização + 67 de operações). Bundle do
-frontend: 242 kB (57 kB gzip).
+Números: 23 tabelas, 16 módulos de API, ~54 rotas, 19 telas, 52 permissões,
+**194 testes** (69 unitários + 25 de autorização + 70 de operações + 30 de
+cadastro e liberação de acesso). Bundle do frontend: 258 kB (61 kB gzip).
 
 ---
 
@@ -63,6 +63,18 @@ Formulário público na tela de login (nome, e-mail e senha) + fila de liberaç�
 | Liberar como Cliente sem vínculo | cria o cadastro do cliente |
 | Liberar como Cliente com e-mail de cliente existente | reaproveita o cadastro, não duplica |
 | Recusar | linha apagada, e-mail livre para novo cadastro, auditoria preservada |
+
+### O sino avisa e leva até a fila
+
+| Verificação | Resultado |
+|---|---|
+| Cadastro novo | aviso `cadastro_pendente` para quem tem `user:update` |
+| Operacional / Financeiro / Cliente | **não** recebem o aviso |
+| Corpo do aviso | nome e e-mail de quem pediu |
+| Destino do clique | `/operacional/configuracoes?aba=permissoes` |
+| Cliente clicando um aviso qualquer | nunca cai em rota interna (`notificationPath`) |
+| Liberar ou recusar | aviso marcado como lido, **inclusive dos outros admins** |
+| Aviso de cadastro recusado | sobrevive ao delete do usuário (histórico do sino) |
 
 ### DTO por perfil
 
@@ -230,3 +242,36 @@ registrar porque a assinatura se repete:
 As duas primeiras passaram a conferir o status da criação antes de julgar o
 efeito: um teste que não verifica o próprio cenário acusa a falha errada. A
 terceira virou reset explícito das configurações em `resetData`.
+
+---
+
+## 6. O que só a produção encontrou
+
+Dois defeitos que passaram por CI verde, deploy verde e healthcheck verde, e
+mesmo assim deixaram o sistema inutilizável. Estão detalhados em
+[`DEPLOY.md`](DEPLOY.md) §5; o que vale registrar aqui é o padrão.
+
+**A sessão não sobrevivia a uma recarga.** O cookie de refresh saía com a flag
+`Secure` porque a opção estava amarrada em `isProduction`. Produção é HTTP puro,
+e o navegador descarta um cookie `Secure` recebido por HTTP **sem dizer nada**.
+Resultado: `POST /api/auth/refresh` respondia 401 para sempre, a tela ficava em
+"Restaurando sessão…" e voltava para o login. Quem responde "isto é HTTPS?" é
+`WEB_BASE_URL`, não `NODE_ENV` — a opção passou a ser `secure: isHttps`.
+
+**Todo `GET /api/notifications` respondia 500.** O ENUM
+`NotificationType` ganhou `cadastro_pendente` **direto no banco de produção**,
+aplicado pela máquina local, e o código que conhece esse valor ainda não tinha
+sido publicado. Uma linha com o valor novo foi gravada em seguida, e o Prisma
+Client da imagem no ar passou a estufar em toda leitura.
+
+A causa comum é uma só: **o `.env` de desenvolvimento aponta `DATABASE_URL` para
+o banco de PRODUÇÃO.** Enquanto isso for verdade, `npm run prisma:migrate` migra
+a produção e `npm run dev` grava na produção — o banco anda na frente da imagem
+publicada, que é exatamente a ordem que quebra. Migration de produção tem um
+caminho só: o entrypoint da API, com o código que a entende já dentro da imagem.
+
+**O que os dois dizem sobre o healthcheck.** `/api/health` pergunta se o processo
+subiu; `/api/ready`, se o banco responde. Nenhum dos dois faz login nem lê uma
+rota autenticada — e foi exatamente aí que os dois defeitos moraram. Um passo de
+verificação que autenticasse e lesse uma rota real teria pego os dois no deploy,
+em vez de deixar o usuário descobrir.

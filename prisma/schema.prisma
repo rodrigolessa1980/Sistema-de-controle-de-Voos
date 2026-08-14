@@ -138,6 +138,9 @@ enum NotificationType {
   cobranca_criada
   cobranca_vencida
   pagamento_recebido
+  /// Alguém se cadastrou na tela de login e espera liberação. Vai para quem tem
+  /// `user:update`. Valor NOVO no fim da lista: MySQL guarda ENUM por posição.
+  cadastro_pendente
 }
 
 /// Ciclo de vida de um e-mail na fila de saída (padrão outbox).

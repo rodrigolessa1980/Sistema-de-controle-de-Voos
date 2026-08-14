@@ -8,7 +8,7 @@
  *   - o seletor "Visualizar como" não existe mais: o perfil vem do login.
  */
 
-import { HOME_PATH, NAV, ROLE_LABELS, type NavItem } from '@acm/shared';
+import { HOME_PATH, NAV, notificationPath, ROLE_LABELS, type NavItem } from '@acm/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -26,6 +26,9 @@ interface NotificationList {
     type: string;
     title: string;
     body: string | null;
+    /** Destino do clique, junto com `entityId` — ver `notificationPath`. */
+    entity: string | null;
+    entityId: string | null;
     readAt: string | null;
     createdAt: string;
   }[];
@@ -168,6 +171,7 @@ function Header({
 }): JSX.Element {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [bellOpen, setBellOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -195,6 +199,28 @@ function Header({
     mutationFn: () => api.post('/notifications/read-all'),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.notifications }),
   });
+
+  const markRead = useMutation({
+    mutationFn: (id: string) => api.post(`/notifications/${id}/read`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.notifications }),
+  });
+
+  /**
+   * Clique numa notificação: fecha o painel, marca como lida e navega.
+   *
+   * A navegação NÃO espera o `read` terminar. O destino é o que a pessoa pediu;
+   * marcar como lida é contabilidade, e prender a tela a uma requisição de
+   * contabilidade faz um clique parecer travado. Se o `read` falhar, o item volta
+   * a aparecer não lido no próximo ciclo — que é o comportamento correto para uma
+   * falha de escrita.
+   */
+  const openNotification = (item: NotificationList['items'][number]): void => {
+    setBellOpen(false);
+    if (item.readAt === null) markRead.mutate(item.id);
+
+    const to = user === null ? null : notificationPath(item.entity, user.role);
+    if (to !== null) void navigate(to);
+  };
 
   const current = items.find(
     (item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`),
@@ -250,15 +276,45 @@ function Header({
               {(notifications.data?.items ?? []).length === 0 ? (
                 <p className="px-2.5 py-6 text-center text-sm text-sub">Nada por aqui.</p>
               ) : (
-                (notifications.data?.items ?? []).map((n) => (
-                  <div
-                    key={n.id}
-                    className={`rounded-md px-2.5 py-2 ${n.readAt === null ? 'bg-primary-soft/40' : ''}`}
-                  >
-                    <p className="text-sm font-medium">{n.title}</p>
-                    {n.body !== null && <p className="text-xs text-sub">{n.body}</p>}
-                  </div>
-                ))
+                (notifications.data?.items ?? []).map((n) => {
+                  const to = user === null ? null : notificationPath(n.entity, user.role);
+                  const unreadItem = n.readAt === null;
+
+                  // Sem destino para este papel, o item vira texto: um link que
+                  // cai em "Acesso não permitido" é pior que nenhum link.
+                  if (to === null) {
+                    return (
+                      <div
+                        key={n.id}
+                        className={`rounded-md px-2.5 py-2 ${unreadItem ? 'bg-primary-soft/40' : ''}`}
+                      >
+                        <p className="text-sm font-medium">{n.title}</p>
+                        {n.body !== null && <p className="text-xs text-sub">{n.body}</p>}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() => {
+                        openNotification(n);
+                      }}
+                      className={`flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left hover:bg-soft ${
+                        unreadItem ? 'bg-primary-soft/40' : ''
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{n.title}</p>
+                        {n.body !== null && <p className="truncate text-xs text-sub">{n.body}</p>}
+                      </div>
+                      <span className="mt-0.5 shrink-0 text-sub">
+                        <Icon name="ChevronRight" size={14} />
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
           )}
