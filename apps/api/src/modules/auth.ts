@@ -28,9 +28,6 @@ import {
   generateRefreshToken,
   hashPassword,
   hashRefreshToken,
-  isLocked,
-  LOCK_MINUTES,
-  MAX_FAILED_LOGINS,
   REFRESH_COOKIE,
   REFRESH_TTL_SECONDS,
   refreshCookieOptions,
@@ -95,8 +92,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: { body: loginBodySchema, response: { 200: loginResponseSchema } },
       config: {
-        // Limite apertado: login é o alvo natural de força bruta.
-        rateLimit: { max: 10, timeWindow: '1 minute' },
+        /**
+         * Teto alto, só para conter enxurrada automatizada.
+         *
+         * Os 10 por minuto que havia aqui eram um segundo jeito de barrar quem
+         * sabe a senha: errar algumas vezes, corrigir e tomar "muitas
+         * requisições" é o mesmo problema da trava que foi removida. 300 por
+         * minuto nenhuma pessoa digitando alcança, e ainda assim não deixa a
+         * rota aberta para um script bater à vontade.
+         */
+        rateLimit: { max: 300, timeWindow: '1 minute' },
       },
     },
     async (request, reply) => {
@@ -119,26 +124,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // a senha ou o próprio acesso.
       if (user.status === 'inativo' || user.status === 'bloqueado') throw invalid;
 
-      if (isLocked(user.lockedUntil, now)) {
-        throw unauthorized(
-          `Acesso bloqueado por ${LOCK_MINUTES} minutos após várias tentativas. Tente mais tarde.`,
-        );
-      }
-
+      /**
+       * NÃO existe bloqueio por tentativas.
+       *
+       * A trava de 5 erros / 15 minutos foi removida por decisão do dono do
+       * sistema: e-mail cadastrado + senha certa entra, ponto. Ela punia quem
+       * digitou errado, e o preço era alto — conta trancada não se destrava
+       * sozinha, e o admin trancado só voltava com UPDATE na mão no banco, no
+       * meio de uma operação de voo.
+       *
+       * As colunas `failedLoginCount` e `lockedUntil` continuam no banco, mas
+       * ninguém mais escreve nelas aqui; o login bem-sucedido logo abaixo as
+       * zera, para limpar o que ficou de antes.
+       */
       const ok = await verifyPassword(password, user.passwordHash);
 
-      if (!ok) {
-        const failed = user.failedLoginCount + 1;
-        const shouldLock = failed >= MAX_FAILED_LOGINS;
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            failedLoginCount: shouldLock ? 0 : failed,
-            lockedUntil: shouldLock ? new Date(now.getTime() + LOCK_MINUTES * 60_000) : null,
-          },
-        });
-        throw invalid;
-      }
+      if (!ok) throw invalid;
 
       /**
        * Cadastro ainda não liberado.
