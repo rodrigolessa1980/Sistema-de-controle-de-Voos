@@ -1,0 +1,3 @@
+# Scripts e configs que rodam no servidor Linux: CRLF quebra o bash e o nginx.
+*.sh        text eol=lf
+docker/**   text eol=lf

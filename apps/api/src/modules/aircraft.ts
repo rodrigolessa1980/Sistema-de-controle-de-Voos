@@ -15,6 +15,8 @@ import {
   updateAircraftBodySchema,
   type Aircraft,
 } from '@acm/shared';
+import { randomBytes } from 'node:crypto';
+
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
@@ -37,6 +39,16 @@ type AircraftRow = Prisma.AircraftGetPayload<{
     notes: true;
   };
 }>;
+
+/**
+ * O prefixo é opcional no cadastro, mas a coluna é única e é ele que identifica
+ * a aeronave em agenda, viagens e tarifas. Em branco, gera uma identificação
+ * que não se confunde com matrícula real (PR-/PP-/PT-...) e cabe nos 12
+ * caracteres da coluna.
+ */
+function provisionalPrefix(): string {
+  return `SEM-${randomBytes(3).toString('hex').toUpperCase()}`;
+}
 
 const aircraftSelect = {
   id: true,
@@ -137,7 +149,8 @@ export async function aircraftRoutes(app: FastifyInstance): Promise<void> {
       const created = await prisma.$transaction(async (tx) => {
         const row = await tx.aircraft.create({
           data: {
-            prefix: body.prefix,
+            prefix:
+              body.prefix === undefined || body.prefix === '' ? provisionalPrefix() : body.prefix,
             kind: body.kind,
             model: body.model,
             manufacturer: body.manufacturer,
@@ -198,7 +211,8 @@ export async function aircraftRoutes(app: FastifyInstance): Promise<void> {
         const row = await tx.aircraft.update({
           where: { id },
           data: {
-            ...(body.prefix === undefined ? {} : { prefix: body.prefix }),
+            // Vazio não apaga o prefixo: a coluna é única e identifica a aeronave.
+            ...(body.prefix === undefined || body.prefix === '' ? {} : { prefix: body.prefix }),
             ...(body.kind === undefined ? {} : { kind: body.kind }),
             ...(body.model === undefined ? {} : { model: body.model }),
             ...(body.manufacturer === undefined ? {} : { manufacturer: body.manufacturer }),

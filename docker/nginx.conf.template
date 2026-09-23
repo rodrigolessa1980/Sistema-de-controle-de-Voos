@@ -4,6 +4,14 @@
 #  Serve os estáticos e repassa /api para o container da API. Com isso o
 #  navegador enxerga uma única origem, e o cookie httpOnly do refresh token
 #  funciona sem CORS nem SameSite=None.
+#
+#  É um TEMPLATE: a imagem oficial do nginx troca `${API_UPSTREAM}` pelo valor
+#  da variável de ambiente ao iniciar. No blue-green cada vaga aponta para a
+#  sua API (`api-blue:1701` / `api-green:1701`); o padrão é `api:1701`.
+#
+#  Em produção quem recebe o tráfego é o nginx de borda (docker/edge), que
+#  manda /api direto para a API. Este proxy continua servindo para o deploy
+#  testar a vaga nova ponta a ponta ANTES de ela entrar no ar.
 # =============================================================================
 
 server {
@@ -42,8 +50,21 @@ server {
         try_files $uri =404;
     }
 
+    # Resolver do Docker + variável no proxy_pass: o nome é resolvido a cada
+    # requisição, não só na partida. Sem isso o nginx não sobe se a API ainda
+    # não existe, e guarda o IP antigo se o container da API for recriado.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $api_upstream http://${API_UPSTREAM};
+
+    # Versão servida agora. A tela compara com a dela para oferecer "Atualizar",
+    # então nunca pode vir de cache.
+    location = /version.json {
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
     location /api/ {
-        proxy_pass http://api:1701;
+        proxy_pass $api_upstream;
         proxy_http_version 1.1;
 
         proxy_set_header Host              $host;

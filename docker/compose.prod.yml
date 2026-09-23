@@ -1,92 +1,139 @@
 # =============================================================================
-#  Compose de produção — roda no servidor, no diretório SERVER_APP_DIR.
+#  Compose de produção — BLUE-GREEN. Roda no servidor, em SERVER_APP_DIR.
 #
-#  O MySQL NÃO entra aqui: já existe na máquina. Este arquivo sobe apenas a API
-#  e o frontend, com as imagens que o CI publicou no GHCR.
+#  O MySQL NÃO entra aqui: já existe na máquina.
 #
-#  Uso no servidor:
-#    docker compose -f compose.prod.yml pull
-#    docker compose -f compose.prod.yml up -d
+#  Topologia:
+#
+#      :1700 / :1701 ──▶ edge (nginx) ──▶ vaga ativa ──┬─ web-blue  + api-blue
+#                                                     └─ web-green + api-green
+#
+#  Só a borda tem porta pública. As duas vagas rodam a mesma imagem em versões
+#  diferentes; a versão nova sobe na vaga parada, é testada, e só então a borda
+#  passa a apontar para ela. Quem orquestra é o docker/deploy.sh — NÃO rode
+#  `docker compose up -d` sem serviço: subiria as duas vagas com a mesma tag.
+#
+#  As tags de cada vaga ficam em `slots.env` (gerado pelo deploy.sh):
+#    IMAGE_API, IMAGE_WEB, TAG_BLUE, TAG_GREEN
+#  e o compose é chamado com `--env-file slots.env`. O `.env` com as
+#  credenciais continua sendo o `env_file` da API.
 # =============================================================================
 
 name: aircharter
 
+x-api: &api
+  restart: unless-stopped
+  # Todas as variáveis vêm do .env que o deploy copia com chmod 600.
+  env_file:
+    - .env
+  volumes:
+    # Documentos de passageiro precisam sobreviver ao redeploy — são dados,
+    # não artefato de build. As duas vagas montam o MESMO volume.
+    - documents:/app/storage/documents
+  healthcheck:
+    test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:1701/api/health']
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    # As migrations rodam no entrypoint, antes do servidor: dá tempo a elas.
+    start_period: 60s
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '5'
+  # Teto de memória: sem isso, um vazamento derruba o servidor inteiro em vez
+  # de derrubar só o container, que o restart recupera.
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+
+x-web: &web
+  restart: unless-stopped
+  healthcheck:
+    test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/health']
+    interval: 10s
+    timeout: 5s
+    retries: 3
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '3'
+  deploy:
+    resources:
+      limits:
+        memory: 128M
+
 services:
-  api:
-    image: ${IMAGE_API:-ghcr.io/rodrigolessa1980/sistema-de-controle-de-voos-api}:${IMAGE_TAG:-latest}
-    container_name: aircharter-api
+  # --------------------------------------------------------------- borda
+  edge:
+    image: nginx:1.27-alpine
+    container_name: aircharter-edge
     restart: unless-stopped
-
-    # Todas as variáveis vêm do .env que o deploy copia com chmod 600.
-    env_file:
-      - .env
-
-    environment:
-      NODE_ENV: production
-      PORT_BACKEND: 1701
-      TZ: America/Sao_Paulo
-
-    ports:
-      - '1701:1701'
-
-    volumes:
-      # Documentos de passageiro precisam sobreviver ao redeploy — são dados,
-      # não artefato de build.
-      - documents:/app/storage/documents
-
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:1701/api/health']
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 40s
-
-    logging:
-      driver: json-file
-      options:
-        max-size: '10m'
-        max-file: '5'
-
-    # Teto de memória: sem isso, um vazamento derruba o servidor inteiro em vez
-    # de derrubar só o container, que o restart recupera.
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
-  web:
-    image: ${IMAGE_WEB:-ghcr.io/rodrigolessa1980/sistema-de-controle-de-voos-web}:${IMAGE_TAG:-latest}
-    container_name: aircharter-web
-    restart: unless-stopped
-
     environment:
       TZ: America/Sao_Paulo
-
     ports:
       - '1700:80'
-
-    # Só sobe depois que a API responde ao healthcheck: evita a janela em que o
-    # site carrega e toda chamada de API falha.
-    depends_on:
-      api:
-        condition: service_healthy
-
+      - '1701:1701'
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Diretório (não o arquivo): o deploy reescreve active-slot.conf e o
+      # container enxerga a mudança no reload.
+      - ./edge/state:/etc/nginx/aircharter:ro
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/health']
+      test: ['CMD', 'nginx', '-t', '-q']
       interval: 30s
       timeout: 5s
       retries: 3
-
     logging:
       driver: json-file
       options:
         max-size: '10m'
         max-file: '3'
-
     deploy:
       resources:
         limits:
-          memory: 128M
+          memory: 64M
+
+  # --------------------------------------------------------------- vaga azul
+  api-blue:
+    <<: *api
+    image: ${IMAGE_API}:${TAG_BLUE:-latest}
+    container_name: aircharter-api-blue
+    environment:
+      NODE_ENV: production
+      PORT_BACKEND: 1701
+      TZ: America/Sao_Paulo
+      APP_SLOT: blue
+
+  web-blue:
+    <<: *web
+    image: ${IMAGE_WEB}:${TAG_BLUE:-latest}
+    container_name: aircharter-web-blue
+    environment:
+      TZ: America/Sao_Paulo
+      API_UPSTREAM: api-blue:1701
+
+  # --------------------------------------------------------------- vaga verde
+  api-green:
+    <<: *api
+    image: ${IMAGE_API}:${TAG_GREEN:-latest}
+    container_name: aircharter-api-green
+    environment:
+      NODE_ENV: production
+      PORT_BACKEND: 1701
+      TZ: America/Sao_Paulo
+      APP_SLOT: green
+
+  web-green:
+    <<: *web
+    image: ${IMAGE_WEB}:${TAG_GREEN:-latest}
+    container_name: aircharter-web-green
+    environment:
+      TZ: America/Sao_Paulo
+      API_UPSTREAM: api-green:1701
 
 volumes:
   documents:

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './App';
+import { UpdatePrompt } from './components/UpdatePrompt';
 import './index.css';
 import { ApiRequestError, TIMEOUT_CODE } from './lib/api';
 import { AuthProvider } from './lib/auth';
@@ -46,6 +47,7 @@ createRoot(container).render(
         <FeedbackProvider>
           <AuthProvider>
             <App />
+            <UpdatePrompt />
           </AuthProvider>
         </FeedbackProvider>
       </BrowserRouter>

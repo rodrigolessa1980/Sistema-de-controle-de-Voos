@@ -30,14 +30,22 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/web ./apps/web
 
+# Tag da imagem, gravada no bundle e em `version.json` (card "Atualizar").
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 RUN npm run build --workspace @acm/web
 
 # ---------------------------------------------------------------- 3. runtime
 FROM nginx:1.27-alpine AS runtime
 
 ENV TZ=America/Sao_Paulo
+# Para onde o /api é repassado. O blue-green sobrescreve por vaga.
+ENV API_UPSTREAM=api:1701
 
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+# O entrypoint da imagem oficial gera conf.d/default.conf a partir do template,
+# substituindo só as variáveis de ambiente definidas (as `$host` do nginx ficam).
+COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 
 EXPOSE 80

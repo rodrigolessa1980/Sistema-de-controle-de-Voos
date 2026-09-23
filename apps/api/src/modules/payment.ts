@@ -25,6 +25,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
+import { env } from '../env';
 import { recalculateCharge, refreshClientAggregates } from '../lib/aggregates';
 import { recordChanges } from '../lib/changefeed';
 import { badRequest, conflict, notFound } from '../lib/errors';
@@ -136,7 +137,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           data: {
             reversedAt: now,
             reversedById: user.id,
-            reversalReason: request.body.reason,
+            reversalReason: request.body.reason ?? null,
           },
         });
 
@@ -205,7 +206,8 @@ async function registerPayment(
   chargeId: string,
   input: {
     amount: string;
-    paidAt: string;
+    /** Em branco = hoje, no fuso da empresa. */
+    paidAt: string | undefined;
     method: Prisma.PaymentCreateInput['method'];
     note: string | null;
     isSettlement: boolean;
@@ -244,7 +246,9 @@ async function registerPayment(
       data: {
         chargeId,
         amount,
-        paidAt: new Date(`${input.paidAt}T00:00:00.000Z`),
+        paidAt: new Date(
+          `${input.paidAt ?? new Date().toLocaleDateString('en-CA', { timeZone: env.TZ })}T00:00:00.000Z`,
+        ),
         method: input.method,
         note: input.note,
         isSettlement: input.isSettlement,

@@ -61,6 +61,22 @@ const clientSelect = {
 
 type ClientRow = Prisma.ClientGetPayload<{ select: typeof clientSelect }>;
 
+/**
+ * O nome é opcional no cadastro, mas é ele que identifica o cliente em
+ * relatórios, cobranças e seletores. Em branco, usa o que houver.
+ */
+function clientDisplayName(body: {
+  name?: string | undefined;
+  company?: string | undefined;
+  email?: string | undefined;
+}): string {
+  // `find` em vez de `??`: string vazia também conta como ausente.
+  return (
+    [body.name, body.company, body.email].find((v) => v !== undefined && v !== '') ??
+    'Cliente sem nome'
+  );
+}
+
 /** DTO interno — com os agregados financeiros. */
 export function toClientDTO(row: ClientRow): Client {
   return {
@@ -225,12 +241,13 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       const body = request.body;
 
       const created = await prisma.$transaction(async (tx) => {
+        const name = clientDisplayName(body);
         const row = await tx.client.create({
           data: {
-            name: body.name,
+            name,
             company: body.company ?? null,
             document: body.document ?? null,
-            email: body.email,
+            email: body.email ?? null,
             phone: body.phone ?? null,
             notes: body.notes ?? null,
           },
@@ -239,6 +256,12 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
         // Login do portal com senha provisória (docs/PLANO.md §12.2).
         if (body.createPortalUser) {
+          // O schema já exige o e-mail neste caso; a checagem estreita o tipo.
+          const email = body.email;
+          if (email === undefined) {
+            throw badRequest('Informe o e-mail para criar o acesso ao portal.');
+          }
+
           const clientRole = await tx.role.findUnique({
             where: { key: 'cliente' },
             select: { id: true },
@@ -246,19 +269,19 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
           if (!clientRole) throw badRequest('O papel "cliente" não está configurado.');
 
           const existing = await tx.user.findUnique({
-            where: { email: body.email },
+            where: { email },
             select: { id: true },
           });
           if (existing) {
-            throw badRequest(`Já existe um usuário com o e-mail ${body.email}.`);
+            throw badRequest(`Já existe um usuário com o e-mail ${email}.`);
           }
 
           const provisional = generateProvisionalPassword();
 
           await tx.user.create({
             data: {
-              email: body.email,
-              name: body.name,
+              email,
+              name,
               passwordHash: await hashPassword(provisional),
               roleId: clientRole.id,
               clientId: row.id,
@@ -270,12 +293,12 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
           // com senha de um cliente que não foi criado.
           await enqueueEmail(tx, {
             dedupeKey: `client.provisional:${row.id}`,
-            recipients: [body.email],
+            recipients: [email],
             subject: 'Seu acesso ao Air Charter Manager',
             template: 'senha-provisoria',
             payload: {
-              name: body.name,
-              email: body.email,
+              name,
+              email,
               password: provisional,
               link: `${env.WEB_BASE_URL}/login`,
             },
@@ -289,7 +312,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
             action: 'client.create',
             entity: 'client',
             entityId: row.id,
-            after: { name: body.name, email: body.email },
+            after: { name: row.name, email: row.email },
           },
         });
 

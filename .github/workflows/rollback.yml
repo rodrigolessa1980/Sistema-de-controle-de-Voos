@@ -1,0 +1,79 @@
+# =============================================================================
+#  Rollback — volta para a versão anterior, sem rebuild.
+#
+#  O blue-green deixa a vaga anterior PARADA (não removida) depois de cada
+#  deploy. Este workflow religa essa vaga, testa, e devolve a borda para ela —
+#  em segundos, sem derrubar ninguém. Rodar de novo desfaz o rollback.
+#
+#  O banco NÃO volta: só é seguro porque toda migration é compatível com a
+#  versão anterior (docs/DEPLOY.md §6).
+#
+#  Uso: Actions → Rollback → Run workflow.
+# =============================================================================
+
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Digite ROLLBACK para confirmar'
+        required: true
+
+concurrency:
+  # Mesmo grupo do deploy: rollback e deploy nunca rodam ao mesmo tempo.
+  group: deploy-producao
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Voltar para a versão anterior
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: Conferir a confirmação
+        if: github.event.inputs.confirmar != 'ROLLBACK'
+        run: |
+          echo "::error::Confirmação ausente. Digite ROLLBACK no campo para executar."
+          exit 1
+
+      - name: Instalar sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Fixar a chave do host
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Executar o rollback
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          HOST: ${{ secrets.SERVER_HOST }}
+          USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ vars.SERVER_APP_DIR || '/opt/aircharter' }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'export APP_DIR=%q\n' "$APP_DIR"
+            printf 'export SMOKE_EMAIL=%q\n' "${SMOKE_EMAIL:-}"
+            printf 'export SMOKE_PASSWORD=%q\n' "${SMOKE_PASSWORD:-}"
+            cat <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+          rc=0
+          ./deploy.sh rollback || rc=$?
+          echo
+          ./deploy.sh status
+          exit "$rc"
+          REMOTE
+          } | sshpass -e ssh "$USER@$HOST" 'bash -se'

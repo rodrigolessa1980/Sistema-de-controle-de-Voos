@@ -74,6 +74,8 @@ const envSchema = z.object({
   CORS_ORIGINS: csv,
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   TZ: z.string().default('America/Sao_Paulo'),
+  /** Tag da imagem (ex.: `sha-1a2b3c4d5e6f`), gravada no build. O deploy blue-green confere por ela. */
+  APP_VERSION: z.string().default('dev'),
 
   // Segredos: o comprimento mínimo evita subir com um placeholder de exemplo.
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET precisa de 32+ caracteres'),

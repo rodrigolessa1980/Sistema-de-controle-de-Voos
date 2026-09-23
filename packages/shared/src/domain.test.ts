@@ -22,7 +22,6 @@ import {
   overlaps,
   settlementStatus,
   tariffTotal,
-  validatePassengers,
   validateScheduleWindow,
   type ScheduledBlock,
   type ScheduledTrip,
@@ -414,24 +413,5 @@ describe('validações de agendamento', () => {
       allowPast: true,
     });
     expect(problems).not.toContain('data_no_passado');
-  });
-
-  it('exige documento quando o CLIENTE solicita', () => {
-    const problems = validatePassengers([{ name: 'Fernando Tavares' }], true);
-    expect(problems).toContain('passageiro_sem_documento');
-  });
-
-  it('NÃO exige documento quando o OPERACIONAL agenda direto', () => {
-    const problems = validatePassengers([{ name: 'Fernando Tavares' }], false);
-    expect(problems).toEqual([]);
-  });
-
-  it('exige nome de todo passageiro', () => {
-    const problems = validatePassengers([{ name: '  ', documentFileId: 'doc-1' }], true);
-    expect(problems).toContain('passageiro_sem_nome');
-  });
-
-  it('exige ao menos um passageiro', () => {
-    expect(validatePassengers([], false)).toContain('sem_passageiros');
   });
 });

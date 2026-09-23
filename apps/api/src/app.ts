@@ -101,7 +101,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(rbacPlugin);
 
   // ------------------------------------------------------------------- saúde
-  app.get('/api/health', async () => ({ status: 'ok', uptime: Math.round(process.uptime()) }));
+  app.get('/api/health', async () => ({
+    status: 'ok',
+    version: env.APP_VERSION,
+    uptime: Math.round(process.uptime()),
+  }));
 
   app.get('/api/ready', async (_request, reply) => {
     try {

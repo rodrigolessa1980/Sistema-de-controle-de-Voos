@@ -565,7 +565,7 @@ describe('liberação pelo administrador', () => {
 
   it('papel cliente reaproveita cadastro existente com o mesmo e-mail', async () => {
     const existente = await makeClient({ name: 'Cliente Antigo' });
-    const user = await criarPendente({ email: existente.email });
+    const user = await criarPendente({ email: existente.email ?? '' });
     const { email } = user;
 
     const response = await approve(user.id, { role: 'cliente' });

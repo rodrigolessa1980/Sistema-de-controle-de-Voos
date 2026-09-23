@@ -349,22 +349,12 @@ export function dayAvailability(input: FleetDayInput, day: Date): DayAvailabilit
 //  VALIDAÇÕES DE AGENDAMENTO
 // ============================================================================
 
-export type ScheduleProblem =
-  | 'datas_incompletas'
-  | 'volta_antes_da_ida'
-  | 'data_no_passado'
-  | 'sem_passageiros'
-  | 'passageiro_sem_nome'
-  | 'passageiro_sem_documento';
+export type ScheduleProblem = 'datas_incompletas' | 'volta_antes_da_ida' | 'data_no_passado';
 
 export const SCHEDULE_PROBLEM_MESSAGES: Record<ScheduleProblem, string> = {
   datas_incompletas: 'Informe as datas e horários de ida e volta.',
   volta_antes_da_ida: 'A volta precisa ser depois da ida.',
   data_no_passado: 'A data de ida não pode ser anterior a hoje.',
-  sem_passageiros: 'Informe ao menos um passageiro.',
-  passageiro_sem_nome: 'Todo passageiro precisa de nome completo.',
-  passageiro_sem_documento:
-    'Envie a foto do documento com foto de cada passageiro (RG, CNH ou passaporte).',
 };
 
 export interface ScheduleWindowInput {
@@ -393,37 +383,6 @@ export function validateScheduleWindow(input: ScheduleWindowInput): ScheduleProb
     if (startOfLocalDay(departure).getTime() < startOfLocalDay(input.now).getTime()) {
       problems.push('data_no_passado');
     }
-  }
-
-  return problems;
-}
-
-export interface PassengerInput {
-  readonly name: string;
-  readonly documentFileId?: string | null | undefined;
-}
-
-/**
- * Protótipo: `paxOk`.
- *
- * `requireDocument` é a diferença real entre os dois fluxos: quando o CLIENTE
- * solicita, a foto do documento é obrigatória; quando o OPERACIONAL cadastra a
- * viagem direto, ela é opcional.
- */
-export function validatePassengers(
-  passengers: readonly PassengerInput[],
-  requireDocument: boolean,
-): ScheduleProblem[] {
-  const problems: ScheduleProblem[] = [];
-
-  if (passengers.length === 0) {
-    problems.push('sem_passageiros');
-    return problems;
-  }
-
-  if (passengers.some((p) => p.name.trim() === '')) problems.push('passageiro_sem_nome');
-  if (requireDocument && passengers.some((p) => !p.documentFileId)) {
-    problems.push('passageiro_sem_documento');
   }
 
   return problems;

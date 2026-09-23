@@ -7,6 +7,10 @@
 #
 #  O host é fixado com `ssh-keyscan` antes de conectar. Autenticação por senha
 #  sem verificar o host aceitaria um man-in-the-middle sem reclamar.
+#
+#  BLUE-GREEN (docs/DEPLOY.md §6): a versão nova sobe na vaga parada, é testada
+#  por dentro e só então a borda passa a apontar para ela. Se qualquer teste
+#  falhar, a versão no ar não é tocada. Quem orquestra é o docker/deploy.sh.
 # =============================================================================
 
 name: Deploy
@@ -123,6 +127,9 @@ jobs:
           context: .
           file: docker/api.Dockerfile
           push: true
+          # Vira `version` no /api/health — o deploy confere a vaga nova por ela.
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.tag }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-api:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-api:latest
@@ -135,6 +142,9 @@ jobs:
           context: .
           file: docker/web.Dockerfile
           push: true
+          # Vira `version.json` e a versão embutida no bundle (card "Atualizar").
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.tag }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-web:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-web:latest
@@ -246,7 +256,7 @@ jobs:
 
           echo "Arquivo .env de produção montado ($(wc -l < .env.prod) linhas)."
 
-      - name: Enviar os arquivos e subir
+      - name: Enviar os arquivos e subir (blue-green)
         env:
           # `sshpass -e` lê a senha daqui. Ela nunca entra na linha de comando,
           # então não aparece em `ps` nem no log do runner.
@@ -257,49 +267,61 @@ jobs:
           IMAGE_TAG: ${{ needs.publicar.outputs.tag }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Conta usada no teste de login da vaga nova, antes da troca. Opcional,
+          # mas sem ela um erro que só aparece com usuário logado entra no ar
+          # (foi o que aconteceu duas vezes — docs/DEPLOY.md §5).
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: |
           set -euo pipefail
 
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          sshpass -e ssh -o BatchMode=no "$USER@$HOST" "mkdir -p '$APP_DIR'"
-          sshpass -e scp docker/compose.prod.yml .env.prod "$USER@$HOST:$APP_DIR/"
+          sshpass -e ssh -o BatchMode=no "$USER@$HOST" "mkdir -p '$APP_DIR/edge/state'"
+          sshpass -e scp docker/compose.prod.yml docker/deploy.sh .env.prod "$USER@$HOST:$APP_DIR/"
+          sshpass -e scp docker/edge/nginx.conf "$USER@$HOST:$APP_DIR/edge/nginx.conf"
 
-          sshpass -e ssh "$USER@$HOST" \
-            APP_DIR="$APP_DIR" \
-            IMAGE_TAG="$IMAGE_TAG" \
-            REPO_LC="$REPO_LC" \
-            GHCR_USER="$GHCR_USER" \
-            GHCR_TOKEN="$GHCR_TOKEN" \
-            'bash -se' <<'REMOTE'
+          # As variáveis vão no INÍCIO do script enviado por stdin — não na
+          # linha de comando do ssh, onde apareceriam em `ps` no servidor.
+          # `%q` escapa para bash: senha com aspas ou espaço não quebra nada.
+          {
+            printf 'export APP_DIR=%q\n' "$APP_DIR"
+            printf 'export IMAGE_TAG=%q\n' "$IMAGE_TAG"
+            printf 'export IMAGE_API=%q\n' "ghcr.io/${REPO_LC}-api"
+            printf 'export IMAGE_WEB=%q\n' "ghcr.io/${REPO_LC}-web"
+            printf 'export GHCR_USER=%q\n' "$GHCR_USER"
+            printf 'export GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+            printf 'export SMOKE_EMAIL=%q\n' "${SMOKE_EMAIL:-}"
+            printf 'export SMOKE_PASSWORD=%q\n' "${SMOKE_PASSWORD:-}"
+            cat <<'REMOTE'
           set -euo pipefail
           cd "$APP_DIR"
 
           # 600: só o dono lê o arquivo com as credenciais.
           mv -f .env.prod .env
           chmod 600 .env
+          chmod +x deploy.sh
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-          export IMAGE_TAG
-          export IMAGE_API="ghcr.io/${REPO_LC}-api"
-          export IMAGE_WEB="ghcr.io/${REPO_LC}-web"
+          # O código de saída é guardado para o logout rodar mesmo se falhar.
+          # As migrations rodam no entrypoint da API da vaga nova.
+          rc=0
+          ./deploy.sh deploy "$IMAGE_TAG" || rc=$?
 
-          docker compose -f compose.prod.yml pull
-          # As migrations rodam no entrypoint da API, antes do servidor subir.
-          docker compose -f compose.prod.yml up -d --remove-orphans
-
-          docker logout ghcr.io
-          docker image prune -f --filter "until=168h"
-          echo "Containers no ar:"
-          docker compose -f compose.prod.yml ps
+          docker logout ghcr.io >/dev/null
+          echo
+          ./deploy.sh status
+          exit "$rc"
           REMOTE
+          } | sshpass -e ssh "$USER@$HOST" 'bash -se'
 
       - name: Verificar a saúde após o deploy
         env:
           HOST: ${{ secrets.SERVER_HOST }}
           PORT_BACKEND: ${{ vars.PORT_BACKEND || '1701' }}
           PORT_FRONTEND: ${{ vars.PORT_FRONTEND || '1700' }}
+          IMAGE_TAG: ${{ needs.publicar.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -324,7 +346,14 @@ jobs:
           curl -fsS -m 10 "http://$HOST:$PORT_FRONTEND/health" > /dev/null \
             || { echo "::error::O frontend não respondeu."; exit 1; }
 
-          echo "Deploy verificado: API e frontend respondendo."
+          # Confirma DE FORA que a versão servida é a nova. O deploy.sh já
+          # conferiu por dentro; isto pega um proxy ou firewall no caminho.
+          curl -fsS -m 10 "http://$HOST:$PORT_FRONTEND/version.json" | grep -q "\"$IMAGE_TAG\"" \
+            || { echo "::error::O site não está servindo a versão $IMAGE_TAG."; exit 1; }
+          curl -fsS -m 10 "http://$HOST:$PORT_BACKEND/api/health" | grep -q "\"$IMAGE_TAG\"" \
+            || { echo "::error::A API não está na versão $IMAGE_TAG."; exit 1; }
+
+          echo "Deploy verificado: $IMAGE_TAG no ar (API e frontend)."
 
       - name: Limpar o .env do runner
         # `always()`: o arquivo some mesmo se um passo anterior falhou.

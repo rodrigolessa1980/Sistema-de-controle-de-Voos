@@ -16,7 +16,6 @@ import {
   paginated,
   rejectRequestBodySchema,
   SCHEDULE_PROBLEM_MESSAGES,
-  validatePassengers,
   validateScheduleWindow,
   type FlightRequest,
 } from '@acm/shared';
@@ -166,11 +165,9 @@ export async function requestRoutes(app: FastifyInstance): Promise<void> {
       const departureAt = new Date(body.departureAt);
       const returnAt = new Date(body.returnAt);
 
-      // Documento com foto é OBRIGATÓRIO quando quem solicita é o cliente.
-      const problems = [
-        ...validateScheduleWindow({ departureAt, returnAt, now }),
-        ...validatePassengers(body.pax, true),
-      ];
+      // Passageiros (nome e documento) são opcionais: só a janela de datas é
+      // validada.
+      const problems = validateScheduleWindow({ departureAt, returnAt, now });
       if (problems.length > 0) {
         throw unprocessable(SCHEDULE_PROBLEM_MESSAGES[problems[0] as never], problems);
       }

@@ -142,7 +142,7 @@ export function ClientesPage({ desc }: { desc: string }): JSX.Element {
                       </div>
                     </TD>
                     <TD className="whitespace-nowrap text-sub">{client.phone ?? '—'}</TD>
-                    <TD className="text-sub">{client.email}</TD>
+                    <TD className="text-sub">{client.email ?? '—'}</TD>
                     <TD className="text-center">{client.tripCount}</TD>
                     <TD className="whitespace-nowrap font-medium">
                       {Money.toCents(client.openBalance) > 0
@@ -273,15 +273,13 @@ function ClientForm({
     },
   });
 
-  const valid = form.name.trim().length >= 2 && form.email.trim().includes('@');
-
   /** Valida com o MESMO schema Zod da rota antes de enviar. */
   const submit = (): void => {
     const raw = {
-      name: form.name.trim(),
+      name: optionalText(form.name),
       company: optionalText(form.company),
       document: optionalText(form.document),
-      email: form.email.trim(),
+      email: optionalText(form.email),
       phone: optionalText(form.phone),
       notes: optionalText(form.notes),
       ...(editing ? {} : { createPortalUser: form.createPortalUser }),
@@ -309,7 +307,7 @@ function ClientForm({
           <Btn variant="outline" onClick={onClose}>
             Cancelar
           </Btn>
-          <Btn onClick={submit} disabled={!valid || save.isPending}>
+          <Btn onClick={submit} disabled={save.isPending}>
             {editing ? 'Salvar' : 'Cadastrar'}
           </Btn>
         </>
@@ -317,7 +315,11 @@ function ClientForm({
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">
-          <Field label="Nome" required help="Nome completo." error={errorOf('name')}>
+          <Field
+            label="Nome"
+            help="Nome completo. Em branco, o cliente é identificado pela empresa ou e-mail."
+            error={errorOf('name')}
+          >
             <Input
               value={form.name}
               onChange={(e) => {
@@ -353,8 +355,7 @@ function ClientForm({
         </Field>
         <Field
           label="E-mail"
-          required
-          help="E-mail de contato e login do portal."
+          help="E-mail de contato. Obrigatório só para criar o acesso ao portal."
           error={errorOf('email')}
         >
           <Input
@@ -459,7 +460,7 @@ function ClientDetail({
       <div className="mt-4">
         {tab === 'dados' && (
           <div className="grid gap-3 sm:grid-cols-2">
-            <DetailRow icon="Mail" label="E-mail" value={client.email} />
+            <DetailRow icon="Mail" label="E-mail" value={client.email ?? '—'} />
             <DetailRow icon="Phone" label="Telefone" value={client.phone ?? '—'} />
             <DetailRow icon="CreditCard" label="Documento" value={client.document ?? '—'} />
             <DetailRow

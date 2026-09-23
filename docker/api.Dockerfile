@@ -53,6 +53,9 @@ RUN apk add --no-cache openssl wget tini
 ENV NODE_ENV=production
 ENV TZ=America/Sao_Paulo
 ENV PORT_BACKEND=1701
+# Tag da imagem; aparece em /api/health e o deploy blue-green confere por ela.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist

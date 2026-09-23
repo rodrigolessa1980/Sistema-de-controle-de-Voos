@@ -75,7 +75,7 @@ import {
 } from '../components/ui';
 import { api, ApiRequestError } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { useFormErrors, validateBody } from '../lib/form';
+import { optionalText, useFormErrors, validateBody } from '../lib/form';
 import { useFeedback } from '../lib/feedback';
 import { queryKeys } from '../lib/query-keys';
 
@@ -997,9 +997,11 @@ export function OpAeronaves(): JSX.Element {
                         {KIND_LABELS[item.kind]}
                       </span>
                     </TD>
-                    <TD>{item.model}</TD>
-                    <TD className="text-sub">{item.manufacturer}</TD>
-                    <TD>{item.capacity} pax</TD>
+                    <TD>{item.model === '' ? '—' : item.model}</TD>
+                    <TD className="text-sub">
+                      {item.manufacturer === '' ? '—' : item.manufacturer}
+                    </TD>
+                    <TD>{item.capacity > 0 ? `${item.capacity} pax` : '—'}</TD>
                     <TD className="text-sub">
                       {item.cruiseSpeed > 0 ? `${item.cruiseSpeed} km/h` : '—'}
                     </TD>
@@ -1115,17 +1117,14 @@ function AircraftForm({
     },
   });
 
-  const valid =
-    form.prefix.trim() !== '' && form.model.trim() !== '' && form.manufacturer.trim() !== '';
-
   /** Valida com o MESMO schema Zod da rota antes de enviar. */
   const submit = (): void => {
     const raw = {
-      prefix: form.prefix.trim().toUpperCase(),
+      prefix: optionalText(form.prefix)?.toUpperCase(),
       kind: form.kind,
-      model: form.model.trim(),
-      manufacturer: form.manufacturer.trim(),
-      capacity: Number(form.capacity) || 1,
+      model: optionalText(form.model),
+      manufacturer: optionalText(form.manufacturer),
+      capacity: form.capacity.trim() === '' ? undefined : Number(form.capacity) || 0,
       cruiseSpeed: Number(form.cruiseSpeed) || 0,
       status: form.status,
     };
@@ -1152,14 +1151,18 @@ function AircraftForm({
           <Btn variant="outline" onClick={onClose}>
             Cancelar
           </Btn>
-          <Btn onClick={submit} disabled={!valid || save.isPending}>
+          <Btn onClick={submit} disabled={save.isPending}>
             {editing ? 'Salvar' : 'Cadastrar'}
           </Btn>
         </>
       }
     >
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Prefixo" required help="Matrícula (ex: PR-HLX)." error={errorOf('prefix')}>
+        <Field
+          label="Prefixo"
+          help="Matrícula (ex: PR-HLX). Em branco, o sistema gera uma identificação provisória."
+          error={errorOf('prefix')}
+        >
           <Input
             value={form.prefix}
             onChange={(e) => {
@@ -1169,7 +1172,7 @@ function AircraftForm({
             className="uppercase"
           />
         </Field>
-        <Field label="Tipo" required help="Avião ou helicóptero.">
+        <Field label="Tipo" help="Avião ou helicóptero.">
           <Select
             value={form.kind}
             onChange={(e) => {
@@ -1183,7 +1186,7 @@ function AircraftForm({
             ))}
           </Select>
         </Field>
-        <Field label="Modelo" required help="Modelo da aeronave." error={errorOf('model')}>
+        <Field label="Modelo" help="Modelo da aeronave." error={errorOf('model')}>
           <Input
             value={form.model}
             onChange={(e) => {
@@ -1192,7 +1195,7 @@ function AircraftForm({
             placeholder="Phenom 300E"
           />
         </Field>
-        <Field label="Fabricante" required help="Quem fabricou." error={errorOf('manufacturer')}>
+        <Field label="Fabricante" help="Quem fabricou." error={errorOf('manufacturer')}>
           <Input
             value={form.manufacturer}
             onChange={(e) => {
@@ -1201,15 +1204,10 @@ function AircraftForm({
             placeholder="Embraer"
           />
         </Field>
-        <Field
-          label="Capacidade"
-          required
-          help="Quantos passageiros cabem."
-          error={errorOf('capacity')}
-        >
+        <Field label="Capacidade" help="Quantos passageiros cabem." error={errorOf('capacity')}>
           <Input
             type="number"
-            min="1"
+            min="0"
             value={form.capacity}
             onChange={(e) => {
               setForm((s) => ({ ...s, capacity: e.target.value }));
@@ -1230,7 +1228,7 @@ function AircraftForm({
             placeholder="Ex: 860"
           />
         </Field>
-        <Field label="Status" required help="Situação atual.">
+        <Field label="Status" help="Situação atual.">
           <Select
             value={form.status}
             onChange={(e) => {
@@ -2021,7 +2019,8 @@ function TariffForm({
     },
   });
 
-  const valid = form.aircraftId !== '' && Money.isPositive(total) && form.startDate !== '';
+  // Só a aeronave é exigida: tarifa sem aeronave não tem a quem se aplicar.
+  const valid = form.aircraftId !== '';
 
   /** Valida com o MESMO schema Zod da rota antes de enviar. */
   const submit = (): void => {
@@ -2031,7 +2030,7 @@ function TariffForm({
       costFees: form.costFees === '' ? '0' : form.costFees,
       costPilot: form.costPilot === '' ? '0' : form.costPilot,
       unit: form.unit,
-      startDate: form.startDate,
+      startDate: optionalText(form.startDate),
       endDate: form.endDate === '' ? null : form.endDate,
       active: form.active,
       ...(editing ? {} : { aircraftId: form.aircraftId }),
@@ -2137,7 +2136,7 @@ function TariffForm({
           </p>
         </div>
 
-        <Field label="Tipo de cobrança" required help="Como é cobrado.">
+        <Field label="Tipo de cobrança" help="Como é cobrado.">
           <Select
             value={form.unit}
             onChange={(e) => {
@@ -2154,8 +2153,7 @@ function TariffForm({
 
         <Field
           label="Data inicial"
-          required
-          help="A partir de quando vale."
+          help="A partir de quando vale. Em branco, vale a partir de hoje."
           error={errorOf('startDate')}
         >
           <Input

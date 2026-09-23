@@ -254,17 +254,13 @@ export function CliSolicitar(): JSX.Element {
   const returnAt = combineDateTime(form.returnDate, form.returnTime);
 
   const routeOk =
-    form.origin.trim() !== '' &&
-    form.destination.trim() !== '' &&
     form.departureDate !== '' &&
     form.departureTime !== '' &&
     form.returnDate !== '' &&
     form.returnTime !== '';
 
-  // Documento é OBRIGATÓRIO quando quem solicita é o cliente.
-  const paxOk =
-    pax.length > 0 &&
-    pax.every((p) => p.name.trim().length >= 2 && p.documentFileId !== null && !p.uploading);
+  // Passageiros (nome e documento) são opcionais; só espera o upload terminar.
+  const paxOk = !pax.some((p) => p.uploading);
 
   const submit = useMutation({
     // Corpo já validado pelo contrato — ver `attempt` abaixo.
@@ -297,8 +293,8 @@ export function CliSolicitar(): JSX.Element {
     }
 
     const raw = {
-      origin: form.origin.trim(),
-      destination: form.destination.trim(),
+      origin: optionalText(form.origin),
+      destination: optionalText(form.destination),
       departureAt: departureIso,
       returnAt: returnIso,
       notes: optionalText(form.notes),
@@ -318,7 +314,7 @@ export function CliSolicitar(): JSX.Element {
 
   const attempt = (): void => {
     if (!routeOk) {
-      notify('error', 'Preencha os campos', 'Informe origem, destino e as datas de ida e volta.');
+      notify('error', 'Preencha as datas', 'Informe as datas e horários de ida e volta.');
       return;
     }
     if (form.departureDate < toISODate(new Date())) {
@@ -330,11 +326,7 @@ export function CliSolicitar(): JSX.Element {
       return;
     }
     if (!paxOk) {
-      notify(
-        'error',
-        'Complete os passageiros',
-        'Informe o nome e envie a foto do documento de cada passageiro.',
-      );
+      notify('error', 'Aguarde o envio', 'Espere terminar o envio dos documentos.');
       return;
     }
     const body = buildBody();
@@ -359,8 +351,8 @@ export function CliSolicitar(): JSX.Element {
             </div>
             <h2 className="mt-5 text-xl font-semibold">Solicitação enviada com sucesso</h2>
             <p className="mt-2 max-w-sm text-sm text-sub">
-              Recebemos o seu pedido e os documentos dos passageiros. Nossa equipe irá analisar a
-              disponibilidade e retornar em breve.
+              Recebemos o seu pedido. Nossa equipe irá analisar a disponibilidade e retornar em
+              breve.
             </p>
             <div className="mt-4">
               <Badge tone="warning" dot>
@@ -416,12 +408,7 @@ export function CliSolicitar(): JSX.Element {
           <div>
             <p className="mb-3 text-sm font-semibold">Ida</p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field
-                label="Origem"
-                required
-                help="De onde você quer partir."
-                error={errorOf('origin')}
-              >
+              <Field label="Origem" help="De onde você quer partir." error={errorOf('origin')}>
                 <Input
                   value={form.origin}
                   onChange={(e) => {
@@ -430,12 +417,7 @@ export function CliSolicitar(): JSX.Element {
                   placeholder="Ex: São Paulo (CGH)"
                 />
               </Field>
-              <Field
-                label="Destino"
-                required
-                help="Para onde você quer ir."
-                error={errorOf('destination')}
-              >
+              <Field label="Destino" help="Para onde você quer ir." error={errorOf('destination')}>
                 <Input
                   value={form.destination}
                   onChange={(e) => {
@@ -509,10 +491,10 @@ export function CliSolicitar(): JSX.Element {
               </span>
             </div>
             <p className="mb-3 text-xs text-sub">
-              Informe o nome completo e a foto do documento com foto de cada passageiro (RG, CNH ou
-              passaporte).
+              Se já souber, informe o nome completo e a foto do documento com foto de cada
+              passageiro (RG, CNH ou passaporte).
             </p>
-            <PassengersEditor value={pax} onChange={setPax} requireDocument />
+            <PassengersEditor value={pax} onChange={setPax} />
           </div>
 
           <Field label="Observações" help="Alguma preferência ou informação importante?">
@@ -981,7 +963,7 @@ export function CliPerfil(): JSX.Element {
     setForm({
       name: profile.data.name,
       company: profile.data.company ?? '',
-      email: profile.data.email,
+      email: profile.data.email ?? '',
       phone: profile.data.phone ?? '',
       document: profile.data.document ?? '',
     });

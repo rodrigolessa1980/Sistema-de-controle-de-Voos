@@ -281,9 +281,19 @@ describe('aeronaves', () => {
     expect(duplicada.statusCode).toBe(409);
   });
 
-  it('recusa campos obrigatórios faltando', async () => {
-    const response = await post(op, '/api/aircraft', { prefix: 'PT-XYZ' });
-    expect(response.statusCode).toBe(422);
+  it('aceita cadastro sem nenhum campo — tudo é opcional', async () => {
+    const response = await post(op, '/api/aircraft', {});
+    expect(response.statusCode).toBe(201);
+
+    const body = response.json<{ prefix: string; kind: string; capacity: number }>();
+    // Prefixo é único e identifica a aeronave: em branco, vira provisório.
+    expect(body.prefix).toMatch(/^SEM-[0-9A-F]{6}$/);
+    expect(body.kind).toBe('aviao');
+    expect(body.capacity).toBe(0);
+
+    // Dois cadastros em branco não colidem no índice único.
+    const segunda = await post(op, '/api/aircraft', {});
+    expect(segunda.statusCode).toBe(201);
   });
 
   it('não remove aeronave com voo futuro agendado', async () => {
@@ -343,13 +353,14 @@ describe('tarifas', () => {
     expect(response.json<{ value: string }>().value).toBe('8500.00');
   });
 
-  it('recusa tarifa com todos os custos zerados', async () => {
+  it('aceita tarifa só com a aeronave — custos zerados e início hoje', async () => {
     const aircraft = await makeAircraft();
-    const response = await post(op, '/api/tariffs', {
-      aircraftId: aircraft.id,
-      startDate: '2026-01-01',
-    });
-    expect(response.statusCode).toBe(422);
+    const response = await post(op, '/api/tariffs', { aircraftId: aircraft.id });
+    expect(response.statusCode).toBe(201);
+
+    const body = response.json<{ value: string; startDate: string }>();
+    expect(body.value).toBe('0.00');
+    expect(body.startDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it('recusa data final antes da inicial', async () => {
@@ -690,10 +701,22 @@ describe('solicitações de voo', () => {
     return doc.id;
   }
 
-  it('exige documento de TODO passageiro', async () => {
-    const response = await post(cli, '/api/requests', corpo());
-    expect(response.statusCode).toBe(422);
-    expect(response.body).toContain('documento');
+  it('aceita sem origem, destino, passageiros ou documento — só as datas', async () => {
+    const response = await post(cli, '/api/requests', { ...futureWindow() });
+    expect(response.statusCode).toBe(201);
+
+    const body = response.json<{ origin: string; destination: string; pax: unknown[] }>();
+    expect(body.origin).toBe('A definir');
+    expect(body.destination).toBe('A definir');
+    expect(body.pax).toHaveLength(0);
+  });
+
+  it('passageiro sem nome vira "Passageiro N"', async () => {
+    const response = await post(cli, '/api/requests', corpo({ pax: [{}, { name: 'Ana Souza' }] }));
+    expect(response.statusCode).toBe(201);
+
+    const nomes = response.json<{ pax: { name: string }[] }>().pax.map((p) => p.name);
+    expect(nomes).toEqual(['Passageiro 1', 'Ana Souza']);
   });
 
   it('cria com documento e dispara e-mail + notificação na mesma transação', async () => {

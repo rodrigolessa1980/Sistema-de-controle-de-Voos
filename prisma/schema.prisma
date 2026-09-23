@@ -294,7 +294,8 @@ model Client {
   company  String? @db.VarChar(180)
   /// CPF ou CNPJ, somente dígitos (a máscara é responsabilidade do front).
   document String? @unique @db.VarChar(20)
-  email    String  @unique @db.VarChar(190)
+  /// Opcional: só é exigido quando o cliente ganha acesso ao portal (é o login).
+  email    String? @unique @db.VarChar(190)
   phone    String? @db.VarChar(32)
   notes    String? @db.Text
   active   Boolean @default(true)

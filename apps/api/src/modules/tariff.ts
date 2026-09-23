@@ -19,6 +19,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
+import { env } from '../env';
 import { recordChange } from '../lib/changefeed';
 import { notFound } from '../lib/errors';
 import { buildPage, cursorArgs } from '../lib/pagination';
@@ -147,7 +148,10 @@ export async function tariffRoutes(app: FastifyInstance): Promise<void> {
             costFees: toDecimal(body.costFees),
             costPilot: toDecimal(body.costPilot),
             unit: body.unit,
-            startDate: new Date(`${body.startDate}T00:00:00.000Z`),
+            // Data inicial em branco = vale a partir de hoje (no fuso da empresa).
+            startDate: new Date(
+              `${body.startDate ?? new Date().toLocaleDateString('en-CA', { timeZone: env.TZ })}T00:00:00.000Z`,
+            ),
             endDate: body.endDate ? new Date(`${body.endDate}T00:00:00.000Z`) : null,
             active: body.active,
           },

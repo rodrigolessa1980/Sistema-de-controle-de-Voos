@@ -116,9 +116,10 @@ Para fechar isso, o dono do repositório precisa ir em
 Push em `main`, ou **Actions → Deploy → Run workflow**.
 
 O fluxo é: verificações (lint, tipos, testes contra um MySQL efêmero) → build e
-push das imagens no GHCR → `sshpass` copia `.env` e `compose.prod.yml` para o
-servidor → `docker compose up -d` → healthcheck. Se o healthcheck falhar, o job
-falha.
+push das imagens no GHCR → `sshpass` copia `.env`, `compose.prod.yml`,
+`deploy.sh` e a config da borda para o servidor → `deploy.sh deploy <tag>`
+(blue-green, §6) → verificação externa da versão servida. Se qualquer etapa
+falhar antes da troca, a versão no ar não é tocada.
 
 ---
 
@@ -216,3 +217,99 @@ do build, com o código que a entende já dentro da imagem.
 O healthcheck do deploy não pega nada disso porque só pergunta se o processo
 subiu e se o banco responde. Uma verificação que fizesse login e lesse uma rota
 autenticada teria pegado os dois.
+
+---
+
+## 6. Deploy blue-green
+
+Desde a introdução do `docker/deploy.sh`, **publicar não derruba o sistema**. A
+versão nova sobe ao lado da atual, é testada, e só então passa a receber o
+tráfego. Quem está com a tela aberta vê o card **"Nova versão disponível"** e
+atualiza quando quiser.
+
+### 6.1 Topologia no servidor
+
+```
+:1700 / :1701 ──▶ aircharter-edge (nginx) ──▶ vaga ativa ──┬─ web-blue  + api-blue
+                                                          └─ web-green + api-green
+```
+
+- **Borda** (`docker/edge/nginx.conf`): o único container com porta pública.
+  Não tem versão; repassa para a vaga escrita em `edge/state/active-slot.conf`.
+  `/api` vai direto para a API da vaga, o resto para o web da vaga.
+- **Vagas** `blue` e `green`: mesmas imagens, tags diferentes (em `slots.env`).
+  As duas montam o mesmo volume de documentos.
+
+### 6.2 O que o `deploy.sh deploy <tag>` faz
+
+1. Baixa as imagens da tag e sobe **a API na vaga parada** — as migrations rodam
+   no entrypoint dela. Espera ficar saudável (se o container reiniciar sozinho,
+   falha na hora e mostra o log).
+2. Sobe o **web da vaga parada** e espera ficar saudável.
+3. **Testa a vaga nova por dentro**, antes de qualquer usuário chegar nela:
+   `version.json` e `/api/health` na versão certa, `/api/ready` (banco), página
+   inicial e — com `SMOKE_EMAIL`/`SMOKE_PASSWORD` — **login e três rotas
+   autenticadas**. É a verificação que teria pegado os dois defeitos da §5.
+4. **Troca a borda** (`nginx -s reload`: gracioso, as requisições em andamento
+   terminam na vaga antiga) e confirma pela borda que a versão nova é a servida.
+5. Espera 30 s e **para** a vaga antiga, sem remover — ela fica pronta para o
+   rollback.
+
+Falhou em 1, 2 ou 3 → a vaga nova é parada, o job fica vermelho e **a versão no
+ar continua intacta**.
+
+### 6.3 Rollback
+
+**Actions → Rollback → Run workflow** (digitando `ROLLBACK`), ou no servidor:
+`./deploy.sh rollback`. Religa a vaga anterior, testa, e devolve a borda para
+ela em segundos. Rodar de novo desfaz o rollback. `./deploy.sh status` mostra a
+vaga ativa e as tags.
+
+Só existe versão para voltar enquanto a vaga anterior não foi reaproveitada: um
+deploy que **falhou** usou essa vaga, e aí o rollback fica indisponível até o
+próximo deploy bem-sucedido.
+
+### 6.4 Card "Nova versão disponível"
+
+A tag da imagem é gravada no bundle (`__APP_VERSION__`) e em `/version.json`,
+servido sem cache. A tela consulta esse arquivo a cada minuto e ao voltar o
+foco; quando diverge, mostra o card (`apps/web/src/components/UpdatePrompt.tsx`).
+**Atualizar** recarrega a página; **Depois** esconde por 15 minutos. Nada
+recarrega sozinho, então ninguém perde um formulário pela metade.
+
+Quem não atualiza continua funcionando: o bundle inteiro já está na memória do
+navegador (as rotas não são carregadas sob demanda).
+
+### 6.5 Regras que passam a valer
+
+As duas versões convivem por um tempo — a antiga atende enquanto a nova é
+testada, e telas abertas seguem na versão antiga até o usuário clicar em
+Atualizar. Por isso:
+
+1. **Toda migration precisa ser compatível com a versão anterior.** Ela é
+   aplicada pela vaga nova enquanto a antiga ainda está no ar, e o rollback não
+   desfaz o banco. Acrescentar coluna/tabela, afrouxar `NOT NULL`, acrescentar
+   valor no fim de um ENUM: pode. Apagar, renomear, apertar restrição: em dois
+   deploys — primeiro o código para de usar, depois a migration remove.
+2. **A API nova precisa aceitar a tela antiga.** Campo novo obrigatório no
+   corpo de uma rota quebra quem ainda não atualizou. Novo campo entra como
+   opcional; a exigência vem num deploy seguinte.
+3. **Jobs rodam nas duas vagas durante a sobreposição.** Hoje isso é seguro:
+   todos são idempotentes e a fila de e-mail reivindica cada mensagem com um
+   `updateMany` atômico. Job novo precisa manter essa propriedade.
+
+### 6.6 Conta do teste de login (recomendado)
+
+Cadastre os secrets `SMOKE_EMAIL` e `SMOKE_PASSWORD` no GitHub com uma conta
+**dedicada** (qualquer papel serve — as rotas testadas só exigem estar logado),
+que **já tenha trocado a senha provisória** (senão `/api/notifications`
+responde 403 e o deploy é barrado). Sem os secrets o deploy funciona, mas pula
+o teste de login e avisa no log.
+
+### 6.7 Primeira execução (transição)
+
+O primeiro deploy com o `deploy.sh` encontra o deploy antigo
+(`aircharter-api`/`aircharter-web`) ocupando as portas. A vaga nova sobe e é
+testada normalmente; só depois os containers antigos são removidos e a borda
+assume as portas. **É a única vez com interrupção — alguns segundos.** Daí em
+diante, nenhuma.

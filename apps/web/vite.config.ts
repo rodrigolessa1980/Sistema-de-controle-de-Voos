@@ -1,14 +1,42 @@
 import { fileURLToPath, URL } from 'node:url';
 
 import react from '@vitejs/plugin-react';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+
+/**
+ * Grava `version.json` junto dos estáticos.
+ *
+ * A tela aberta no navegador compara a versão com que foi carregada
+ * (`__APP_VERSION__`) com a deste arquivo, servido sem cache. Quando o deploy
+ * blue-green troca de versão, as duas divergem e aparece o card "Atualizar".
+ */
+function versionFile(version: string): Plugin {
+  return {
+    name: 'acm-version-file',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: `${JSON.stringify({ version })}
+`,
+      });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiTarget = env['API_BASE_URL'] ?? 'http://localhost:1701';
+  // Vem do `--build-arg APP_VERSION` no CI; `dev` desliga a checagem.
+  const version = env['APP_VERSION'] ?? 'dev';
 
   return {
-    plugins: [react()],
+    plugins: [react(), versionFile(version)],
+
+    define: {
+      __APP_VERSION__: JSON.stringify(version),
+    },
 
     resolve: {
       alias: {

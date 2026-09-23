@@ -698,7 +698,7 @@ function PaymentForm({
 
   /** Valida com o MESMO schema Zod da rota antes de enviar. */
   const submit = (): void => {
-    const raw = { amount, paidAt, method, note: optionalText(note) };
+    const raw = { amount, paidAt: optionalText(paidAt), method, note: optionalText(note) };
 
     const result = validateBody(createPaymentBodySchema, raw);
     if (!result.ok) {
@@ -765,7 +765,11 @@ function PaymentForm({
               }}
             />
           </Field>
-          <Field label="Data" required help="Data do recebimento." error={errorOf('paidAt')}>
+          <Field
+            label="Data"
+            help="Data do recebimento. Em branco, usa a data de hoje."
+            error={errorOf('paidAt')}
+          >
             <Input
               type="date"
               value={paidAt}
@@ -776,12 +780,7 @@ function PaymentForm({
           </Field>
         </div>
 
-        <Field
-          label="Forma de pagamento"
-          required
-          help="Como o cliente pagou."
-          error={errorOf('method')}
-        >
+        <Field label="Forma de pagamento" help="Como o cliente pagou." error={errorOf('method')}>
           <Select
             value={method}
             onChange={(e) => {

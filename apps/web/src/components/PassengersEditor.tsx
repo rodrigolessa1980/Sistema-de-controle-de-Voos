@@ -33,8 +33,14 @@ export const newPassenger = (): PassengerDraft => ({
   uploading: false,
 });
 
+/**
+ * Passageiros são opcionais: linha sem nome e sem documento é descartada; nome
+ * em branco vira "Passageiro N" no servidor.
+ */
 export const toPassengerBody = (list: readonly PassengerDraft[]): PassengerInputBody[] =>
-  list.map((p) => ({ name: p.name.trim(), documentFileId: p.documentFileId }));
+  list
+    .filter((p) => p.name.trim() !== '' || p.documentFileId !== null)
+    .map((p) => ({ name: p.name.trim(), documentFileId: p.documentFileId }));
 
 /** Object URL de um documento, revogado ao desmontar para não vazar memória. */
 export function useDocumentUrl(documentFileId: string | null): {
@@ -155,11 +161,9 @@ export function DocumentViewer({
 export function PassengersEditor({
   value,
   onChange,
-  requireDocument,
 }: {
   value: readonly PassengerDraft[];
   onChange: (list: PassengerDraft[]) => void;
-  requireDocument: boolean;
 }): JSX.Element {
   const { notifyError } = useFeedback();
   const [viewing, setViewing] = useState<string | null>(null);
@@ -203,7 +207,7 @@ export function PassengersEditor({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Nome completo" required help="Nome exatamente como está no documento.">
+            <Field label="Nome completo" help="Nome exatamente como está no documento.">
               <Input
                 value={passenger.name}
                 onChange={(e) => {
@@ -215,10 +219,7 @@ export function PassengersEditor({
 
             <div>
               <div className="mb-1.5 flex items-center gap-1.5">
-                <label className="text-sm font-medium text-ink">
-                  Documento com foto
-                  {requireDocument && <span className="ml-0.5 text-danger">*</span>}
-                </label>
+                <label className="text-sm font-medium text-ink">Documento com foto</label>
                 <span
                   data-help
                   title="Envie a foto de um documento com foto (RG, CNH ou passaporte)."

@@ -195,17 +195,21 @@ export const aircraftSchema = z.object({
 });
 export type Aircraft = z.infer<typeof aircraftSchema>;
 
+/**
+ * Nenhum campo é obrigatório. Prefixo em branco vira uma identificação
+ * provisória gerada no servidor (a coluna é única); capacidade 0 = não informada.
+ */
 export const createAircraftBodySchema = z.object({
   prefix: z
     .string()
     .trim()
-    .min(2)
     .max(12)
-    .transform((v) => v.toUpperCase()),
-  kind: z.enum(AIRCRAFT_KINDS),
-  model: z.string().trim().min(1).max(120),
-  manufacturer: z.string().trim().min(1).max(120),
-  capacity: z.coerce.number().int().min(1).max(999),
+    .transform((v) => v.toUpperCase())
+    .optional(),
+  kind: z.enum(AIRCRAFT_KINDS).default('aviao'),
+  model: z.string().trim().max(120).default(''),
+  manufacturer: z.string().trim().max(120).default(''),
+  capacity: z.coerce.number().int().min(0).max(999).default(0),
   cruiseSpeed: z.coerce.number().int().min(0).max(5000).default(0),
   status: z.enum(AIRCRAFT_STATUSES).default('disponivel'),
   notes: z.string().trim().max(2000).optional(),
@@ -248,16 +252,12 @@ export const createTariffBodySchema = z
     costFees: moneyInputSchema.default('0'),
     costPilot: moneyInputSchema.default('0'),
     unit: z.enum(TARIFF_UNITS).default('por_hora'),
-    startDate: dateOnlySchema,
+    /** Em branco, o servidor usa a data de hoje. */
+    startDate: dateOnlySchema.optional(),
     endDate: dateOnlySchema.nullish(),
     active: z.boolean().default(true),
   })
-  .refine(
-    (v) =>
-      Number(v.costFuel) + Number(v.costFlightHour) + Number(v.costFees) + Number(v.costPilot) > 0,
-    { message: 'Informe ao menos um valor de custo', path: ['costFlightHour'] },
-  )
-  .refine((v) => !v.endDate || v.endDate >= v.startDate, {
+  .refine((v) => !v.endDate || !v.startDate || v.endDate >= v.startDate, {
     message: 'A data final precisa ser depois da inicial',
     path: ['endDate'],
   });
@@ -346,7 +346,7 @@ export const clientSchema = z.object({
   name: z.string(),
   company: z.string().nullable(),
   document: z.string().nullable(),
-  email: z.string(),
+  email: z.string().nullable(),
   phone: z.string().nullable(),
   notes: z.string().nullable(),
   active: z.boolean(),
@@ -373,19 +373,35 @@ export const clientSelfSchema = clientSchema.pick({
 });
 export type ClientSelf = z.infer<typeof clientSelfSchema>;
 
-export const createClientBodySchema = z.object({
-  name: z.string().trim().min(2, 'Informe o nome').max(180),
+/**
+ * Nenhum campo é obrigatório no cadastro. Nome em branco vira uma identificação
+ * derivada no servidor (empresa → e-mail → "Cliente sem nome"), porque o nome é
+ * o que aparece em relatórios, cobranças e seletores.
+ */
+const clientBodyBaseSchema = z.object({
+  name: z.string().trim().max(180).optional(),
   company: z.string().trim().max(180).optional(),
   document: z.string().trim().max(20).optional(),
-  email: z.string().trim().toLowerCase().email('E-mail inválido'),
+  email: z.string().trim().toLowerCase().email('E-mail inválido').optional(),
   phone: z.string().trim().max(32).optional(),
   notes: z.string().trim().max(2000).optional(),
   /** Cria o login do portal e envia senha provisória (docs/PLANO.md §12.2). */
   createPortalUser: z.boolean().default(false),
 });
+
+export const createClientBodySchema = clientBodyBaseSchema.superRefine((body, ctx) => {
+  // O e-mail é o login do portal: sem ele não há como criar o acesso.
+  if (body.createPortalUser && body.email === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['email'],
+      message: 'Informe o e-mail para criar o acesso ao portal',
+    });
+  }
+});
 export type CreateClientBody = z.infer<typeof createClientBodySchema>;
 
-export const updateClientBodySchema = createClientBodySchema
+export const updateClientBodySchema = clientBodyBaseSchema
   .omit({ createPortalUser: true })
   .partial();
 export type UpdateClientBody = z.infer<typeof updateClientBodySchema>;
@@ -417,8 +433,17 @@ export const passengerSchema = z.object({
 });
 export type Passenger = z.infer<typeof passengerSchema>;
 
+/** Origem/destino: opcional, e em branco vira "A definir" (aparece em listas e relatórios). */
+const placeSchema = z
+  .string()
+  .trim()
+  .max(160)
+  .optional()
+  .transform((v) => (v === undefined || v === '' ? 'A definir' : v));
+
 export const passengerInputSchema = z.object({
-  name: z.string().trim().min(2, 'Informe o nome completo').max(180),
+  /** Opcional: em branco, o servidor grava "Passageiro N". */
+  name: z.string().trim().max(180).optional(),
   documentFileId: idSchema.nullish(),
 });
 export type PassengerInputBody = z.infer<typeof passengerInputSchema>;
@@ -485,14 +510,15 @@ export type TripClient = z.infer<typeof tripClientSchema>;
 export const createTripBodySchema = z.object({
   clientId: idSchema,
   aircraftId: idSchema,
-  origin: z.string().trim().min(2, 'Informe a origem').max(160),
-  destination: z.string().trim().min(2, 'Informe o destino').max(160),
+  /** Opcionais: em branco, grava "A definir". */
+  origin: placeSchema,
+  destination: placeSchema,
   departureAt: isoDateTimeSchema,
   returnAt: isoDateTimeSchema,
   distanceKm: z.coerce.number().min(0).max(50_000).nullish(),
   notes: z.string().trim().max(2000).optional(),
   commercialValue: moneyInputSchema.nullish(),
-  pax: z.array(passengerInputSchema).min(1, 'Informe ao menos um passageiro').max(50),
+  pax: z.array(passengerInputSchema).max(50).default([]),
   /** Origem da viagem, quando nasce da conversão de uma solicitação. */
   requestId: idSchema.nullish(),
   /** Confirmação explícita de agendar apesar de pendência financeira. */
@@ -579,12 +605,13 @@ export const flightRequestSchema = z.object({
 export type FlightRequest = z.infer<typeof flightRequestSchema>;
 
 export const createFlightRequestBodySchema = z.object({
-  origin: z.string().trim().min(2, 'Informe a origem').max(160),
-  destination: z.string().trim().min(2, 'Informe o destino').max(160),
+  /** Opcionais: em branco, grava "A definir". */
+  origin: placeSchema,
+  destination: placeSchema,
   departureAt: isoDateTimeSchema,
   returnAt: isoDateTimeSchema,
   notes: z.string().trim().max(2000).optional(),
-  pax: z.array(passengerInputSchema).min(1, 'Informe ao menos um passageiro').max(50),
+  pax: z.array(passengerInputSchema).max(50).default([]),
 });
 export type CreateFlightRequestBody = z.infer<typeof createFlightRequestBodySchema>;
 
@@ -646,20 +673,21 @@ export type CreateChargeBody = z.infer<typeof createChargeBodySchema>;
 
 export const createPaymentBodySchema = z.object({
   amount: moneyInputSchema,
-  paidAt: dateOnlySchema,
-  method: z.enum(PAYMENT_METHODS),
+  /** Em branco, o servidor usa a data de hoje. */
+  paidAt: dateOnlySchema.optional(),
+  method: z.enum(PAYMENT_METHODS).default('pix'),
   note: z.string().trim().max(500).optional(),
 });
 export type CreatePaymentBody = z.infer<typeof createPaymentBodySchema>;
 
 export const settleChargeBodySchema = z.object({
-  paidAt: dateOnlySchema,
+  paidAt: dateOnlySchema.optional(),
   method: z.enum(PAYMENT_METHODS).default('transferencia'),
   note: z.string().trim().max(500).optional(),
 });
 
 export const reversePaymentBodySchema = z.object({
-  reason: z.string().trim().min(3, 'Informe o motivo do estorno').max(500),
+  reason: z.string().trim().max(500).optional(),
 });
 
 export const listChargeQuerySchema = paginationQuerySchema.extend({
@@ -701,7 +729,7 @@ export const createBlockBodySchema = z
   .object({
     aircraftId: idSchema,
     kind: z.enum(BLOCK_KINDS),
-    reason: z.string().trim().min(2, 'Informe o motivo').max(255),
+    reason: z.string().trim().max(255).default(''),
     startAt: isoDateTimeSchema,
     endAt: isoDateTimeSchema,
   })

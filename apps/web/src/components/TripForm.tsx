@@ -229,15 +229,10 @@ export function TripForm({
   const hasDebt = selectedClient !== undefined && selectedClient.financialStatus !== 'em_dia';
 
   const conflict = availability.data !== undefined && !availability.data.available;
-  const paxValid = pax.length > 0 && pax.every((p) => p.name.trim().length >= 2);
-
   const canSubmit =
     form.clientId !== '' &&
     form.aircraftId !== '' &&
-    form.origin.trim() !== '' &&
-    form.destination.trim() !== '' &&
     scheduleValid &&
-    paxValid &&
     !conflict &&
     !pax.some((p) => p.uploading);
 
@@ -285,8 +280,8 @@ export function TripForm({
     const raw = {
       clientId: form.clientId,
       aircraftId: form.aircraftId,
-      origin: form.origin.trim(),
-      destination: form.destination.trim(),
+      origin: optionalText(form.origin),
+      destination: optionalText(form.destination),
       departureAt: departureIso,
       returnAt: returnIso,
       distanceKm: form.distanceKm === '' ? null : Number(form.distanceKm),
@@ -413,7 +408,11 @@ export function TripForm({
           </div>
         )}
 
-        <Field label="Origem" required help="De onde o voo parte." error={errorOf('origin')}>
+        <Field
+          label="Origem"
+          help="De onde o voo parte. Em branco, fica 'A definir'."
+          error={errorOf('origin')}
+        >
           <Input
             value={form.origin}
             onChange={(e) => {
@@ -423,7 +422,11 @@ export function TripForm({
           />
         </Field>
 
-        <Field label="Destino" required help="Para onde o voo vai." error={errorOf('destination')}>
+        <Field
+          label="Destino"
+          help="Para onde o voo vai. Em branco, fica 'A definir'."
+          error={errorOf('destination')}
+        >
           <Input
             value={form.destination}
             onChange={(e) => {
@@ -651,7 +654,7 @@ export function TripForm({
           {errorOf('pax') !== undefined && (
             <p className="mb-2 text-xs text-danger">{errorOf('pax')}</p>
           )}
-          <PassengersEditor value={pax} onChange={setPax} requireDocument={false} />
+          <PassengersEditor value={pax} onChange={setPax} />
         </div>
 
         <div className="sm:col-span-2">
