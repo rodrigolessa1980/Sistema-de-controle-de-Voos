@@ -869,7 +869,24 @@ export type UpdateSettingsBody = z.infer<typeof updateSettingsBodySchema>;
 //  PAINÉIS
 // ============================================================================
 
+/** `?month=AAAA-MM` — mês de referência dos painéis. Ausente = mês atual. */
+export const dashboardMonthQuerySchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use o formato AAAA-MM')
+    .optional(),
+});
+export type DashboardMonthQuery = z.infer<typeof dashboardMonthQuerySchema>;
+
 export const operationalDashboardSchema = z.object({
+  /** Mês de referência dos indicadores mensais (AAAA-MM). */
+  month: z.string(),
+  /** Voos (não cancelados/recusados) com ida no mês de referência. */
+  tripsInMonth: z.number().int(),
+  /** Voos confirmados com ida no mês de referência. */
+  confirmedInMonth: z.number().int(),
+  /** Solicitações aguardando análise com voo pedido no mês de referência. */
+  requestsInMonth: z.number().int(),
   tripsToday: z.number().int(),
   upcomingTrips: z.number().int(),
   pendingRequests: z.number().int(),
@@ -877,6 +894,7 @@ export const operationalDashboardSchema = z.object({
   availableAircraft: z.number().int(),
   totalAircraft: z.number().int(),
   clientsWithDebt: z.number().int(),
+  /** Voos do mês de referência (no mês atual, só de hoje em diante). */
   nextTrips: z.array(
     z.object({
       id: idSchema,
@@ -888,6 +906,7 @@ export const operationalDashboardSchema = z.object({
       status: z.enum(TRIP_STATUSES),
     }),
   ),
+  /** Solicitações aguardando análise com voo pedido no mês de referência. */
   recentRequests: z.array(
     z.object({
       id: idSchema,
@@ -902,14 +921,9 @@ export const operationalDashboardSchema = z.object({
 });
 export type OperationalDashboard = z.infer<typeof operationalDashboardSchema>;
 
-/** `?month=AAAA-MM` — mês de referência do painel financeiro. Ausente = mês atual. */
-export const financialDashboardQuerySchema = z.object({
-  month: z
-    .string()
-    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use o formato AAAA-MM')
-    .optional(),
-});
-export type FinancialDashboardQuery = z.infer<typeof financialDashboardQuerySchema>;
+/** Mesmo filtro do painel operacional. */
+export const financialDashboardQuerySchema = dashboardMonthQuerySchema;
+export type FinancialDashboardQuery = DashboardMonthQuery;
 
 export const financialDashboardSchema = z.object({
   /** Mês de referência dos indicadores mensais (AAAA-MM). */

@@ -48,6 +48,7 @@ import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Calendar } from '../components/Calendar';
+import { currentMonthKey, MonthFilter, monthKeyLabel } from '../components/MonthFilter';
 import {
   newPassenger,
   PassengerList,
@@ -102,6 +103,10 @@ interface Page<T> {
 // ============================================================================
 
 interface OperationalDashboardData {
+  month: string;
+  tripsInMonth: number;
+  confirmedInMonth: number;
+  requestsInMonth: number;
   tripsToday: number;
   upcomingTrips: number;
   pendingRequests: number;
@@ -131,58 +136,78 @@ interface OperationalDashboardData {
 
 export function OpDashboard(): JSX.Element {
   const navigate = useNavigate();
+  const [month, setMonth] = useState(currentMonthKey);
   const query = useQuery({
-    queryKey: queryKeys.dashboardOp,
-    queryFn: () => api.get<OperationalDashboardData>('/dashboard/operacional'),
+    queryKey: [...queryKeys.dashboardOp, month],
+    queryFn: () => api.get<OperationalDashboardData>('/dashboard/operacional', { month }),
+    // Mantém o mês anterior na tela enquanto o novo carrega, sem piscar o loading.
+    placeholderData: (previous) => previous,
   });
 
-  if (query.isPending) return <Loading />;
+  const isCurrentMonth = month === currentMonthKey();
+  const head = (
+    <PageHead
+      title="Dashboard"
+      desc={`Visão geral da operação · ${monthKeyLabel(month)} · hoje é ${formatDate(new Date())}.`}
+    >
+      <MonthFilter value={month} onChange={setMonth} />
+    </PageHead>
+  );
+
+  if (query.isPending) {
+    return (
+      <div className="space-y-6">
+        {head}
+        <Loading />
+      </div>
+    );
+  }
   if (query.isError) {
     return (
-      <ErrorState
-        message="Não foi possível carregar o painel."
-        onRetry={() => void query.refetch()}
-      />
+      <div className="space-y-6">
+        {head}
+        <ErrorState
+          message="Não foi possível carregar o painel."
+          onRetry={() => void query.refetch()}
+        />
+      </div>
     );
   }
 
   const d = query.data;
 
   return (
-    <div className="space-y-6">
-      <PageHead
-        title="Dashboard"
-        desc={`Visão geral da operação de hoje, ${formatDate(new Date())}.`}
-      />
+    <div className={`space-y-6 transition-opacity ${query.isPlaceholderData ? 'opacity-60' : ''}`}>
+      {head}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <Stat
-          label="Voos hoje"
-          value={d.tripsToday}
+          label="Voos no mês"
+          value={d.tripsInMonth}
           icon="PlaneTakeoff"
-          hint="Embarques agendados"
-        />
-        <Stat label="Próximos voos" value={d.upcomingTrips} icon="Clock3" hint="A partir de hoje" />
-        <Stat
-          label="Solicitações"
-          value={d.pendingRequests}
-          icon="Inbox"
-          tone="warning"
-          hint="Aguardando análise"
+          hint="Pela data de ida"
         />
         <Stat
           label="Confirmados"
-          value={d.confirmedUpcoming}
+          value={d.confirmedInMonth}
           icon="CheckCircle2"
           tone="success"
-          hint="Próximos voos confirmados"
+          hint="Voos confirmados no mês"
         />
+        <Stat
+          label="Solicitações"
+          value={d.requestsInMonth}
+          icon="Inbox"
+          tone="warning"
+          hint="Aguardando análise no mês"
+        />
+        <Stat label="Voos hoje" value={d.tripsToday} icon="Clock3" hint="Embarques de hoje" />
         <Stat
           label="Aeronaves livres"
           value={`${d.availableAircraft}/${d.totalAircraft}`}
           icon="Plane"
           tone="success"
-          hint="Disponíveis"
+          hint="Disponíveis agora"
         />
         <Stat
           label="Clientes c/ pendência"
@@ -218,8 +243,12 @@ export function OpDashboard(): JSX.Element {
         <Card className="lg:col-span-2">
           <div className="flex items-center justify-between p-5 pb-3">
             <div>
-              <h3 className="font-semibold">Próximos voos</h3>
-              <p className="text-sm text-sub">Agenda dos próximos embarques</p>
+              <h3 className="font-semibold">{isCurrentMonth ? 'Próximos voos' : 'Voos do mês'}</h3>
+              <p className="text-sm text-sub">
+                {isCurrentMonth
+                  ? 'Embarques de hoje até o fim do mês'
+                  : `Embarques de ${monthKeyLabel(month)}`}
+              </p>
             </div>
             <Btn
               variant="ghost"
@@ -232,7 +261,7 @@ export function OpDashboard(): JSX.Element {
             </Btn>
           </div>
           {d.nextTrips.length === 0 ? (
-            <Empty icon="PlaneTakeoff" title="Nenhum voo agendado" />
+            <Empty icon="PlaneTakeoff" title="Nenhum voo neste mês" />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -273,7 +302,7 @@ export function OpDashboard(): JSX.Element {
         <Card>
           <div className="p-5 pb-3">
             <h3 className="font-semibold">Solicitações recentes</h3>
-            <p className="text-sm text-sub">Aguardando sua análise</p>
+            <p className="text-sm text-sub">Aguardando análise · voo pedido no mês</p>
           </div>
           <div className="space-y-3 px-5 pb-5">
             {d.recentRequests.length === 0 ? (

@@ -11,6 +11,7 @@
 
 import {
   clientDashboardSchema,
+  dashboardMonthQuerySchema,
   financialDashboardQuerySchema,
   financialDashboardSchema,
   operationalDashboardSchema,
@@ -41,15 +42,32 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     '/operacional',
     {
       preValidation: requirePermission('dashboard:operacional'),
-      schema: { response: { 200: operationalDashboardSchema } },
+      schema: {
+        querystring: dashboardMonthQuerySchema,
+        response: { 200: operationalDashboardSchema },
+      },
     },
-    async () => {
+    async (request) => {
       const now = new Date();
       const dayStart = startOfLocalDay(now);
       const dayEnd = new Date(dayStart.getTime() + 86_400_000);
 
-      // Tudo em paralelo: 8 queries independentes, uma viagem de ida e volta.
+      // Mês de referência (`?month=AAAA-MM`), no mesmo fuso de "hoje".
+      const [refYear, refMonth] = request.query.month
+        ? (request.query.month.split('-').map(Number) as [number, number])
+        : [now.getFullYear(), now.getMonth() + 1];
+      const monthStart = new Date(refYear, refMonth - 1, 1);
+      const monthEnd = new Date(refYear, refMonth, 1);
+      const inMonth = { gte: monthStart, lt: monthEnd };
+      // A lista de voos do mês atual começa hoje; meses passados/futuros vêm inteiros.
+      const listFrom = dayStart > monthStart && dayStart < monthEnd ? dayStart : monthStart;
+      const valid = { status: { notIn: ['recusada' as const, 'cancelada' as const] } };
+
+      // Tudo em paralelo: queries independentes, uma viagem de ida e volta.
       const [
+        tripsInMonth,
+        confirmedInMonth,
+        requestsInMonth,
         tripsToday,
         upcomingTrips,
         pendingRequests,
@@ -60,15 +78,15 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         nextTrips,
         recentRequests,
       ] = await Promise.all([
-        prisma.trip.count({
-          where: {
-            status: { notIn: ['recusada', 'cancelada'] },
-            departureAt: { gte: dayStart, lt: dayEnd },
-          },
+        prisma.trip.count({ where: { ...valid, departureAt: inMonth } }),
+        prisma.trip.count({ where: { status: 'confirmada', departureAt: inMonth } }),
+        prisma.flightRequest.count({
+          where: { status: 'aguardando_analise', departureAt: inMonth },
         }),
         prisma.trip.count({
-          where: { status: { notIn: ['recusada', 'cancelada'] }, departureAt: { gte: now } },
+          where: { ...valid, departureAt: { gte: dayStart, lt: dayEnd } },
         }),
+        prisma.trip.count({ where: { ...valid, departureAt: { gte: now } } }),
         prisma.flightRequest.count({ where: { status: 'aguardando_analise' } }),
         prisma.trip.count({ where: { status: 'confirmada', departureAt: { gte: now } } }),
         prisma.aircraft.count({ where: { deletedAt: null, status: 'disponivel' } }),
@@ -78,7 +96,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           where: { deletedAt: null, financialStatus: { not: 'em_dia' } },
         }),
         prisma.trip.findMany({
-          where: { status: { notIn: ['recusada', 'cancelada'] }, departureAt: { gte: now } },
+          where: { ...valid, departureAt: { gte: listFrom, lt: monthEnd } },
           select: {
             id: true,
             code: true,
@@ -89,10 +107,10 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             client: { select: { name: true } },
           },
           orderBy: { departureAt: 'asc' },
-          take: 6,
+          take: 8,
         }),
         prisma.flightRequest.findMany({
-          where: { status: 'aguardando_analise' },
+          where: { status: 'aguardando_analise', departureAt: inMonth },
           select: {
             id: true,
             code: true,
@@ -108,6 +126,10 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       ]);
 
       const result: OperationalDashboard = {
+        month: `${String(refYear)}-${String(refMonth).padStart(2, '0')}`,
+        tripsInMonth,
+        confirmedInMonth,
+        requestsInMonth,
         tripsToday,
         upcomingTrips,
         pendingRequests,

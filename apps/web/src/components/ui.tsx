@@ -92,6 +92,7 @@ import {
 } from 'lucide-react';
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -101,6 +102,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import type { JSX } from 'react';
+import { createPortal } from 'react-dom';
 
 // ============================================================================
 //  ÍCONE
@@ -756,59 +758,122 @@ export interface MenuItem {
   readonly separator?: boolean;
 }
 
+/** Largura do menu de ações (`w-52`), usada para alinhá-lo à direita do botão. */
+const MENU_WIDTH = 208;
+
+/**
+ * Menu de ações ("⋮").
+ *
+ * A lista é renderizada num portal em `document.body`, com posição fixa
+ * calculada a partir do botão. Dentro de uma tabela com `overflow-x-auto` um
+ * `absolute` comum seria recortado pelo contêiner e ficaria escondido; no
+ * portal ele se sobrepõe a tudo. Sem espaço abaixo, abre para cima.
+ */
 export function Menu({ items }: { items: readonly MenuItem[] }): JSX.Element | null {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handler = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent): void => {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
-    document.addEventListener('mousedown', handler);
+    // Posição fixa não acompanha rolagem: fechar é mais simples que reposicionar.
+    const close = (e: Event): void => {
+      if (e.type === 'scroll' && menuRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
     return () => {
-      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
     };
-  }, []);
+  }, [open]);
+
+  // Mede o menu já montado e decide se cabe abaixo do botão ou precisa abrir acima.
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current || !menuRef.current) return;
+    const btn = buttonRef.current.getBoundingClientRect();
+    const height = menuRef.current.offsetHeight;
+    const gap = 4;
+    const below = btn.bottom + gap;
+    const top =
+      below + height > window.innerHeight - 8 && btn.top - gap - height >= 8
+        ? btn.top - gap - height
+        : below;
+    const left = Math.max(8, Math.min(btn.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
+    setPos({ top, left });
+  }, [open]);
 
   const visible = items.filter((item) => item.hidden !== true);
   // Sem nenhuma ação permitida, nem o botão aparece.
   if (visible.length === 0) return null;
 
   return (
-    <div className="relative" ref={ref}>
+    <>
       <button
+        ref={buttonRef}
         type="button"
         aria-label="Ações"
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => {
+          setPos(null);
           setOpen((o) => !o);
         }}
         className="inline-flex h-8 w-8 items-center justify-center rounded-md text-sub hover:bg-soft hover:text-ink"
       >
         <Icon name="MoreVertical" size={16} />
       </button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1 w-52 rounded-lg border border-line bg-white p-1 shadow-pop animate-fade">
-          {visible.map((item, index) => (
-            <div key={item.label}>
-              {item.separator === true && index > 0 && <div className="my-1 h-px bg-line" />}
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  item.onClick();
-                }}
-                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-soft ${
-                  item.danger === true ? 'text-danger hover:bg-danger-soft' : 'text-ink'
-                }`}
-              >
-                <Icon name={item.icon} size={16} />
-                {item.label}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{
+              top: pos?.top ?? 0,
+              left: pos?.left ?? 0,
+              width: MENU_WIDTH,
+              // Invisível só no primeiro quadro, enquanto a posição é medida.
+              visibility: pos ? 'visible' : 'hidden',
+            }}
+            className="fixed z-[60] rounded-lg border border-line bg-white p-1 shadow-pop animate-fade"
+          >
+            {visible.map((item, index) => (
+              <div key={item.label}>
+                {item.separator === true && index > 0 && <div className="my-1 h-px bg-line" />}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    item.onClick();
+                  }}
+                  className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-soft ${
+                    item.danger === true ? 'text-danger hover:bg-danger-soft' : 'text-ink'
+                  }`}
+                >
+                  <Icon name={item.icon} size={16} />
+                  {item.label}
+                </button>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
