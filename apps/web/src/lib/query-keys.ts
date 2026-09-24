@@ -75,6 +75,7 @@ export const ENTITY_INVALIDATIONS: Record<ChangeEntity, readonly (readonly strin
     ['calendar'],
     ['availability-days'],
     queryKeys.dashboardOp,
+    queryKeys.dashboardFin,
     queryKeys.dashboardCli,
     queryKeys.clients,
   ],

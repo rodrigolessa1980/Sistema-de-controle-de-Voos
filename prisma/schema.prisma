@@ -543,6 +543,13 @@ model Trip {
   /// Valor final cobrado; editável pelo operacional.
   commercialValue Decimal? @map("commercial_value") @db.Decimal(14, 2)
 
+  // ---- Custos da viagem (R$, todos opcionais) — alimentam o painel Financeiro ----
+  costFuel       Decimal? @map("cost_fuel") @db.Decimal(14, 2) // valor do abastecimento
+  costFlightHour Decimal? @map("cost_flight_hour") @db.Decimal(14, 2) // valor da hora de voo
+  costPilot      Decimal? @map("cost_pilot") @db.Decimal(14, 2) // despesas do piloto
+  costFees       Decimal? @map("cost_fees") @db.Decimal(14, 2) // taxas e tarifas
+  costInternet   Decimal? @map("cost_internet") @db.Decimal(14, 2) // internet
+
   // ---- Rastreabilidade ----
   createdById String? @map("created_by_id")
   createdBy   User?   @relation("TripCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)

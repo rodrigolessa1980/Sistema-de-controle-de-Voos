@@ -18,11 +18,13 @@ import {
   combineDateTime,
   createTripBodySchema,
   toISODate,
+  TRIP_EXPENSE_FIELDS,
   updateTripBodySchema,
   type Aircraft,
   type AvailabilityResult,
   type Client,
   type PricingPreview,
+  type TripExpenseKey,
   type TripInternal,
 } from '@acm/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -65,7 +67,7 @@ export interface TripPrefill {
   readonly passengers?: readonly { name: string; documentFileId: string | null }[];
 }
 
-interface FormState {
+interface FormState extends Record<TripExpenseKey, string> {
   clientId: string;
   aircraftId: string;
   origin: string;
@@ -90,8 +92,22 @@ const blank = (): FormState => ({
   returnTime: '',
   distanceKm: '',
   commercialValue: '',
+  costFuel: '',
+  costFlightHour: '',
+  costPilot: '',
+  costFees: '',
+  costInternet: '',
   notes: '',
 });
+
+/** Ajuda de cada custo no formulário. */
+const EXPENSE_HELP: Record<TripExpenseKey, string> = {
+  costFuel: 'Quanto foi gasto com combustível nesta viagem.',
+  costFlightHour: 'Valor pago pela hora de voo.',
+  costPilot: 'Diárias, hospedagem, alimentação e transporte do piloto.',
+  costFees: 'Taxas aeroportuárias, pouso, navegação e outras tarifas.',
+  costInternet: 'Custo de internet a bordo.',
+};
 
 /** Espera o usuário parar de digitar antes de consultar o servidor. */
 function useDebounced<T>(value: T, delay = 400): T {
@@ -146,6 +162,11 @@ export function TripForm({
         returnTime: new Date(editing.returnAt).toTimeString().slice(0, 5),
         distanceKm: editing.distanceKm === null ? '' : String(editing.distanceKm),
         commercialValue: editing.commercialValue ?? '',
+        costFuel: editing.costFuel ?? '',
+        costFlightHour: editing.costFlightHour ?? '',
+        costPilot: editing.costPilot ?? '',
+        costFees: editing.costFees ?? '',
+        costInternet: editing.costInternet ?? '',
         notes: editing.notes ?? '',
       });
       setPax(
@@ -249,6 +270,7 @@ export function TripForm({
       void queryClient.invalidateQueries({ queryKey: queryKeys.trips });
       void queryClient.invalidateQueries({ queryKey: queryKeys.requests });
       void queryClient.invalidateQueries({ queryKey: queryKeys.clients });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardFin });
       void queryClient.invalidateQueries({ queryKey: ['calendar'] });
       notify(
         'success',
@@ -289,6 +311,9 @@ export function TripForm({
       returnAt: returnIso,
       distanceKm: form.distanceKm === '' ? null : Number(form.distanceKm),
       commercialValue: form.commercialValue === '' ? null : form.commercialValue,
+      ...Object.fromEntries(
+        TRIP_EXPENSE_FIELDS.map(({ key }) => [key, form[key] === '' ? null : form[key]]),
+      ),
       notes: optionalText(form.notes),
       pax: toPassengerBody(pax),
       ...(editing ? {} : { requestId: prefill?.requestId ?? null, acknowledgeDebt }),
@@ -334,6 +359,10 @@ export function TripForm({
   };
 
   const estimated = pricing.data?.estimatedValue ?? '0.00';
+  const expenseTotal = TRIP_EXPENSE_FIELDS.reduce(
+    (acc, { key }) => acc + (Number(form[key]) || 0),
+    0,
+  ).toFixed(2);
 
   /**
    * `pricing.data` já estreitado para o painel de tarifa.
@@ -644,6 +673,40 @@ export function TripForm({
             </div>
           </div>
         )}
+
+        {/* ---- custos da viagem: todos opcionais, alimentam o Financeiro ---- */}
+        <div className="sm:col-span-2">
+          <div className="mb-1 flex items-center justify-between">
+            <p className="text-sm font-semibold">Custos da viagem</p>
+            <span className="text-xs text-sub">Total: {Money.formatBRL(expenseTotal)}</span>
+          </div>
+          <p className="mb-3 text-xs text-sub">
+            Valores em reais (R$). Nenhum é obrigatório — preencha o que tiver. Os valores vão para
+            o painel do Financeiro.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {TRIP_EXPENSE_FIELDS.map(({ key, label }) => (
+              <Field
+                key={key}
+                label={`${label} (R$)`}
+                help={EXPENSE_HELP[key]}
+                error={errorOf(key)}
+              >
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={form[key]}
+                  onChange={(e) => {
+                    set(key, e.target.value);
+                  }}
+                  placeholder="0,00"
+                />
+              </Field>
+            ))}
+          </div>
+        </div>
 
         <div className="sm:col-span-2">
           <div className="mb-1 flex items-center justify-between">

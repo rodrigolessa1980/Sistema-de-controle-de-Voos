@@ -478,6 +478,19 @@ const tripBaseSchema = z.object({
 });
 
 /**
+ * Custos lançados na viagem, em R$. Todos opcionais; somados no painel do
+ * Financeiro. A ordem aqui é a ordem do formulário e do painel.
+ */
+export const TRIP_EXPENSE_FIELDS = [
+  { key: 'costFuel', label: 'Valor abastecimento' },
+  { key: 'costFlightHour', label: 'Valor hora de voo' },
+  { key: 'costPilot', label: 'Despesas piloto' },
+  { key: 'costFees', label: 'Taxas e tarifas' },
+  { key: 'costInternet', label: 'Internet' },
+] as const;
+export type TripExpenseKey = (typeof TRIP_EXPENSE_FIELDS)[number]['key'];
+
+/**
  * Viagem como o pessoal interno vê: com aeronave e com os números da tarifa.
  */
 export const tripInternalSchema = tripBaseSchema.extend({
@@ -491,6 +504,11 @@ export const tripInternalSchema = tripBaseSchema.extend({
   flightHours: z.number().nullable(),
   estimatedValue: moneySchema.nullable(),
   commercialValue: moneySchema.nullable(),
+  costFuel: moneySchema.nullable(),
+  costFlightHour: moneySchema.nullable(),
+  costPilot: moneySchema.nullable(),
+  costFees: moneySchema.nullable(),
+  costInternet: moneySchema.nullable(),
   scheduledWithDebt: z.boolean(),
   cancelReason: z.string().nullable(),
 });
@@ -518,6 +536,11 @@ export const createTripBodySchema = z.object({
   distanceKm: z.coerce.number().min(0).max(50_000).nullish(),
   notes: z.string().trim().max(2000).optional(),
   commercialValue: moneyInputSchema.nullish(),
+  costFuel: moneyInputSchema.nullish(),
+  costFlightHour: moneyInputSchema.nullish(),
+  costPilot: moneyInputSchema.nullish(),
+  costFees: moneyInputSchema.nullish(),
+  costInternet: moneyInputSchema.nullish(),
   pax: z.array(passengerInputSchema).max(50).default([]),
   /** Origem da viagem, quando nasce da conversão de uma solicitação. */
   requestId: idSchema.nullish(),
@@ -844,6 +867,30 @@ export const financialDashboardSchema = z.object({
   overdueAmount: moneySchema,
   dueSoonCount: z.number().int(),
   dueSoonDays: z.number().int(),
+  /** Custos lançados nas viagens (não canceladas/recusadas), por data de ida. */
+  tripExpenses: z.object({
+    month: z.object({
+      total: moneySchema,
+      byField: z.object({
+        costFuel: moneySchema,
+        costFlightHour: moneySchema,
+        costPilot: moneySchema,
+        costFees: moneySchema,
+        costInternet: moneySchema,
+      }),
+      tripCount: z.number().int(),
+    }),
+    allTime: z.object({ total: moneySchema, tripCount: z.number().int() }),
+    recent: z.array(
+      z.object({
+        id: idSchema,
+        code: z.string(),
+        clientName: z.string(),
+        departureAt: isoDateTimeSchema,
+        total: moneySchema,
+      }),
+    ),
+  }),
   openCharges: z.array(
     z.object({
       id: idSchema,

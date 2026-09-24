@@ -17,9 +17,11 @@ import {
   PAYMENT_METHODS,
   formatDate,
   toISODate,
+  TRIP_EXPENSE_FIELDS,
   type Charge,
   type ChargeStatus,
   type Client,
+  type FinancialDashboard,
   type FinancialReport,
   type PaymentHistoryItem,
   type TripInternal,
@@ -64,22 +66,7 @@ interface Page<T> {
 //  DASHBOARD
 // ============================================================================
 
-interface FinancialDashboardData {
-  totalReceivable: string;
-  receivedThisMonth: string;
-  overdueAmount: string;
-  dueSoonCount: number;
-  dueSoonDays: number;
-  openCharges: {
-    id: string;
-    code: string;
-    clientName: string;
-    balance: string;
-    dueDate: string;
-    status: ChargeStatus;
-  }[];
-  dueSoon: { id: string; code: string; clientName: string; balance: string; dueDate: string }[];
-}
+type FinancialDashboardData = FinancialDashboard;
 
 export function FinDashboard(): JSX.Element {
   const navigate = useNavigate();
@@ -130,6 +117,59 @@ export function FinDashboard(): JSX.Element {
           hint={`Próximos ${d.dueSoonDays} dias`}
         />
       </div>
+
+      <Card>
+        <div className="flex flex-wrap items-start justify-between gap-2 p-5 pb-3">
+          <div>
+            <h3 className="font-semibold">Custos das viagens</h3>
+            <p className="text-sm text-sub">
+              Lançados no cadastro de cada viagem · mês atual (pela data de ida)
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xl font-semibold">{Money.formatBRL(d.tripExpenses.month.total)}</p>
+            <p className="text-xs text-sub">
+              {d.tripExpenses.month.tripCount} viage
+              {d.tripExpenses.month.tripCount === 1 ? 'm' : 'ns'} no mês · total geral{' '}
+              {Money.formatBRL(d.tripExpenses.allTime.total)}
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 px-5 pb-4 sm:grid-cols-3 lg:grid-cols-5">
+          {TRIP_EXPENSE_FIELDS.map(({ key, label }) => (
+            <div key={key} className="rounded-lg border border-line p-3">
+              <p className="text-xs text-sub">{label}</p>
+              <p className="mt-0.5 text-sm font-semibold">
+                {Money.formatBRL(d.tripExpenses.month.byField[key])}
+              </p>
+            </div>
+          ))}
+        </div>
+        {d.tripExpenses.recent.length > 0 && (
+          <div className="overflow-x-auto border-t border-line">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-line">
+                  <TH>Viagem</TH>
+                  <TH>Cliente</TH>
+                  <TH>Data da ida</TH>
+                  <TH>Custo total</TH>
+                </tr>
+              </thead>
+              <tbody>
+                {d.tripExpenses.recent.map((trip) => (
+                  <tr key={trip.id} className="border-b border-line last:border-0">
+                    <TD className="text-sub">{trip.code}</TD>
+                    <TD className="whitespace-nowrap font-medium">{trip.clientName}</TD>
+                    <TD className="whitespace-nowrap">{formatDate(trip.departureAt)}</TD>
+                    <TD className="font-medium">{Money.formatBRL(trip.total)}</TD>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">

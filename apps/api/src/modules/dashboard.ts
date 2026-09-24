@@ -14,15 +14,17 @@ import {
   financialDashboardSchema,
   operationalDashboardSchema,
   startOfLocalDay,
+  TRIP_EXPENSE_FIELDS,
   type ClientDashboard,
   type FinancialDashboard,
   type OperationalDashboard,
+  type TripExpenseKey,
 } from '@acm/shared';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
 import { notFound } from '../lib/errors';
-import { decimalToMoneyStrict, type Prisma, prisma } from '../lib/prisma';
+import { decimalToMoneyStrict, Prisma, prisma } from '../lib/prisma';
 import { ownClientId, requirePermission, requireUser } from '../plugins/rbac';
 import { getSettings } from './settings';
 import { toTripClientDTO } from './trip';
@@ -152,6 +154,54 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       const dueLimit = new Date(now.getTime() + settings.dueSoonDays * 86_400_000);
       const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
+      // Custos das viagens: só as que valem (não canceladas/recusadas).
+      const expenseSum = {
+        costFuel: true,
+        costFlightHour: true,
+        costPilot: true,
+        costFees: true,
+        costInternet: true,
+      } as const;
+      const hasExpense = {
+        OR: TRIP_EXPENSE_FIELDS.map(({ key }) => ({ [key]: { not: null } })),
+      };
+
+      const [monthExpenses, allExpenses, recentExpenseTrips] = await Promise.all([
+        prisma.trip.aggregate({
+          where: {
+            status: { notIn: ['recusada', 'cancelada'] },
+            departureAt: { gte: monthStart, lt: monthEnd },
+            ...hasExpense,
+          },
+          _sum: expenseSum,
+          _count: { _all: true },
+        }),
+        prisma.trip.aggregate({
+          where: { status: { notIn: ['recusada', 'cancelada'] }, ...hasExpense },
+          _sum: expenseSum,
+          _count: { _all: true },
+        }),
+        prisma.trip.findMany({
+          where: { status: { notIn: ['recusada', 'cancelada'] }, ...hasExpense },
+          select: {
+            id: true,
+            code: true,
+            departureAt: true,
+            client: { select: { name: true } },
+            ...expenseSum,
+          },
+          orderBy: { departureAt: 'desc' },
+          take: 6,
+        }),
+      ]);
+
+      /** Soma os 5 custos, tratando ausência como zero. */
+      const sumExpenses = (row: Record<TripExpenseKey, Prisma.Decimal | null>): Prisma.Decimal =>
+        TRIP_EXPENSE_FIELDS.reduce(
+          (acc, { key }) => (row[key] === null ? acc : acc.add(row[key])),
+          new Prisma.Decimal(0),
+        );
+
       const [receivable, received, overdue, dueSoonCount, openCharges, dueSoon] = await Promise.all(
         [
           // Soma no banco. O protótipo somava `balance(c)` de cada cobrança em JS.
@@ -212,6 +262,30 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         overdueAmount: money(overdue._sum.balance),
         dueSoonCount,
         dueSoonDays: settings.dueSoonDays,
+        tripExpenses: {
+          month: {
+            total: money(sumExpenses(monthExpenses._sum)),
+            byField: {
+              costFuel: money(monthExpenses._sum.costFuel),
+              costFlightHour: money(monthExpenses._sum.costFlightHour),
+              costPilot: money(monthExpenses._sum.costPilot),
+              costFees: money(monthExpenses._sum.costFees),
+              costInternet: money(monthExpenses._sum.costInternet),
+            },
+            tripCount: monthExpenses._count._all,
+          },
+          allTime: {
+            total: money(sumExpenses(allExpenses._sum)),
+            tripCount: allExpenses._count._all,
+          },
+          recent: recentExpenseTrips.map((t) => ({
+            id: t.id,
+            code: t.code,
+            clientName: t.client.name,
+            departureAt: t.departureAt.toISOString(),
+            total: money(sumExpenses(t)),
+          })),
+        },
         openCharges: openCharges.map((c) => ({
           id: c.id,
           code: c.code,
@@ -309,6 +383,11 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             flightHours: null,
             estimatedValue: null,
             commercialValue: null,
+            costFuel: null,
+            costFlightHour: null,
+            costPilot: null,
+            costFees: null,
+            costInternet: null,
             scheduledWithDebt: false,
             cancelReason: null,
           }),

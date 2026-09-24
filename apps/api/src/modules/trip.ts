@@ -32,7 +32,9 @@ import {
   updateTripBodySchema,
   validateScheduleWindow,
   SCHEDULE_PROBLEM_MESSAGES,
+  TRIP_EXPENSE_FIELDS,
   type PassengerInputBody,
+  type TripExpenseKey,
   type TripClient,
   type TripInternal,
 } from '@acm/shared';
@@ -77,6 +79,11 @@ const tripSelect = {
   flightHours: true,
   estimatedValue: true,
   commercialValue: true,
+  costFuel: true,
+  costFlightHour: true,
+  costPilot: true,
+  costFees: true,
+  costInternet: true,
   scheduledWithDebt: true,
   cancelReason: true,
   createdAt: true,
@@ -125,6 +132,11 @@ export function toTripInternalDTO(row: TripRow): TripInternal {
     flightHours: row.flightHours === null ? null : row.flightHours.toNumber(),
     estimatedValue: decimalToMoney(row.estimatedValue),
     commercialValue: decimalToMoney(row.commercialValue),
+    costFuel: decimalToMoney(row.costFuel),
+    costFlightHour: decimalToMoney(row.costFlightHour),
+    costPilot: decimalToMoney(row.costPilot),
+    costFees: decimalToMoney(row.costFees),
+    costInternet: decimalToMoney(row.costInternet),
     scheduledWithDebt: row.scheduledWithDebt,
     cancelReason: row.cancelReason,
   };
@@ -267,6 +279,15 @@ async function buildPricing(
           ? toDecimal(pricing.commercialValue)
           : null,
   };
+}
+
+/** Custos da viagem prontos para o `data` do Prisma (só os que vieram no corpo). */
+function expenseData(body: Partial<Record<TripExpenseKey, string | null | undefined>>) {
+  const data: Partial<Record<TripExpenseKey, Prisma.Decimal | null>> = {};
+  for (const { key } of TRIP_EXPENSE_FIELDS) {
+    if (body[key] !== undefined) data[key] = toDecimalOrNull(body[key]);
+  }
+  return data;
 }
 
 // ============================================================================
@@ -532,6 +553,7 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
             flightHours: pricing.flightHours,
             estimatedValue: pricing.estimatedValue,
             commercialValue: pricing.commercialValue,
+            ...expenseData(body),
             scheduledWithDebt: hasDebt,
             createdById: user.id,
           },
@@ -761,6 +783,7 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
               : { distanceKm: toDecimalOrNull(body.distanceKm) }),
             ...(body.notes === undefined ? {} : { notes: body.notes }),
             ...(body.pax === undefined ? {} : { passengers: body.pax.length }),
+            ...expenseData(body),
             ...(pricing === null
               ? {}
               : {
