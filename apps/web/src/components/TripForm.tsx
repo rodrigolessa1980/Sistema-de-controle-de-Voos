@@ -30,6 +30,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { JSX } from 'react';
 
 import { api, ApiRequestError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { optionalText, toIsoDateTime, useFormErrors, validateBody } from '../lib/form';
 import { useFeedback } from '../lib/feedback';
 import { queryKeys } from '../lib/query-keys';
@@ -119,6 +120,7 @@ export function TripForm({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const { notify, notifyError, confirm } = useFeedback();
+  const { role } = useAuth();
 
   const [form, setForm] = useState<FormState>(blank);
   const { setErrors, setServerErrors, clearAll, errorOf } = useFormErrors();
@@ -342,7 +344,8 @@ export function TripForm({
    */
   const tariffData =
     pricing.data !== undefined && pricing.data.tariffValue !== null ? pricing.data : null;
-  const today = toISODate(new Date());
+  // O admin pode lançar voos já realizados; para ele o calendário não trava o passado.
+  const minDate = editing || role === 'admin' ? undefined : toISODate(new Date());
 
   return (
     <Modal
@@ -440,7 +443,7 @@ export function TripForm({
         <Field label="Data da ida" required help="Dia do embarque." error={errorOf('departureAt')}>
           <Input
             type="date"
-            min={editing ? undefined : today}
+            min={minDate}
             value={form.departureDate}
             onChange={(e) => {
               set('departureDate', e.target.value);
@@ -461,7 +464,7 @@ export function TripForm({
         <Field label="Data da volta" required help="Dia do retorno." error={errorOf('returnAt')}>
           <Input
             type="date"
-            min={form.departureDate === '' ? (editing ? undefined : today) : form.departureDate}
+            min={form.departureDate === '' ? minDate : form.departureDate}
             value={form.returnDate}
             onChange={(e) => {
               set('returnDate', e.target.value);

@@ -55,6 +55,7 @@ export function Calendar({
   onCursorChange,
   onEventClick,
   onDayClick,
+  allowPastPick = false,
   today,
 }: {
   events: readonly CalendarEvent[];
@@ -62,6 +63,8 @@ export function Calendar({
   onCursorChange: (date: Date) => void;
   onEventClick: (event: CalendarEvent) => void;
   onDayClick?: (day: Date) => void;
+  /** Deixa clicar em dias que já passaram (admin lançando voo já realizado). */
+  allowPastPick?: boolean;
   today: Date;
 }): JSX.Element {
   const [view, setView] = useState<View>('mes');
@@ -170,7 +173,7 @@ export function Calendar({
               const inMonth = day.getMonth() === cursor.getMonth();
               const isToday = sameLocalDay(day, today);
               const isPast = startOfLocalDay(day).getTime() < todayStart.getTime();
-              const canPick = onDayClick !== undefined && !isPast && inMonth;
+              const canPick = onDayClick !== undefined && (allowPastPick || !isPast) && inMonth;
 
               return (
                 <div

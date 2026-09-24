@@ -308,6 +308,7 @@ export function OpDashboard(): JSX.Element {
 // ============================================================================
 
 export function OpAgenda(): JSX.Element {
+  const { role } = useAuth();
   const today = new Date();
   const [cursor, setCursor] = useState(today);
   const [selected, setSelected] = useState<CalendarEvent | null>(null);
@@ -351,6 +352,7 @@ export function OpAgenda(): JSX.Element {
           onCursorChange={setCursor}
           onEventClick={setSelected}
           today={today}
+          allowPastPick={role === 'admin'}
           onDayClick={(day) => {
             setPrefill({ departureDate: toISODate(day) });
             setFormOpen(true);

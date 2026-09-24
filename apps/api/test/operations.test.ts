@@ -563,6 +563,22 @@ describe('viagens', () => {
     expect(response.statusCode).toBe(422);
   });
 
+  it('admin pode lançar viagem no passado', async () => {
+    const aircraft = await cenario();
+    const admin = await createUser(app, 'admin');
+    const passado = new Date(Date.now() - 30 * 86_400_000);
+
+    const response = await post(
+      admin,
+      '/api/trips',
+      corpo(aircraft.id, {
+        departureAt: passado.toISOString(),
+        returnAt: new Date(passado.getTime() + 3_600_000).toISOString(),
+      }),
+    );
+    expect(response.statusCode).toBe(201);
+  });
+
   it('recusa volta antes da ida', async () => {
     const aircraft = await cenario();
     const janela = futureWindow();
