@@ -11,6 +11,7 @@
 
 import {
   clientDashboardSchema,
+  financialDashboardQuerySchema,
   financialDashboardSchema,
   operationalDashboardSchema,
   startOfLocalDay,
@@ -143,14 +144,21 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     '/financeiro',
     {
       preValidation: requirePermission('dashboard:financeiro'),
-      schema: { response: { 200: financialDashboardSchema } },
+      schema: {
+        querystring: financialDashboardQuerySchema,
+        response: { 200: financialDashboardSchema },
+      },
     },
-    async () => {
+    async (request) => {
       const now = new Date();
       const settings = await getSettings();
 
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+      // Mês de referência (`?month=AAAA-MM`); sem filtro, o mês corrente.
+      const [refYear, refMonth] = request.query.month
+        ? (request.query.month.split('-').map(Number) as [number, number])
+        : [now.getUTCFullYear(), now.getUTCMonth() + 1];
+      const monthStart = new Date(Date.UTC(refYear, refMonth - 1, 1));
+      const monthEnd = new Date(Date.UTC(refYear, refMonth, 1));
       const dueLimit = new Date(now.getTime() + settings.dueSoonDays * 86_400_000);
       const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
@@ -182,7 +190,11 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           _count: { _all: true },
         }),
         prisma.trip.findMany({
-          where: { status: { notIn: ['recusada', 'cancelada'] }, ...hasExpense },
+          where: {
+            status: { notIn: ['recusada', 'cancelada'] },
+            departureAt: { gte: monthStart, lt: monthEnd },
+            ...hasExpense,
+          },
           select: {
             id: true,
             code: true,
@@ -202,11 +214,19 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           new Prisma.Decimal(0),
         );
 
-      const [receivable, received, overdue, dueSoonCount, openCharges, dueSoon] = await Promise.all(
-        [
+      const [receivable, receivableInMonth, received, overdue, dueSoonCount, openCharges, dueSoon] =
+        await Promise.all([
           // Soma no banco. O protótipo somava `balance(c)` de cada cobrança em JS.
           prisma.charge.aggregate({
             where: { canceledAt: null, balance: { gt: 0 } },
+            _sum: { balance: true },
+          }),
+          prisma.charge.aggregate({
+            where: {
+              canceledAt: null,
+              balance: { gt: 0 },
+              dueDate: { gte: monthStart, lt: monthEnd },
+            },
             _sum: { balance: true },
           }),
           prisma.payment.aggregate({
@@ -225,7 +245,11 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             },
           }),
           prisma.charge.findMany({
-            where: { canceledAt: null, balance: { gt: 0 } },
+            where: {
+              canceledAt: null,
+              balance: { gt: 0 },
+              dueDate: { gte: monthStart, lt: monthEnd },
+            },
             select: {
               id: true,
               code: true,
@@ -253,11 +277,12 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             orderBy: { dueDate: 'asc' },
             take: 10,
           }),
-        ],
-      );
+        ]);
 
       const result: FinancialDashboard = {
+        month: `${String(refYear)}-${String(refMonth).padStart(2, '0')}`,
         totalReceivable: money(receivable._sum.balance),
+        receivableInMonth: money(receivableInMonth._sum.balance),
         receivedThisMonth: money(received._sum.amount),
         overdueAmount: money(overdue._sum.balance),
         dueSoonCount,

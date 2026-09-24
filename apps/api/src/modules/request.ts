@@ -16,6 +16,7 @@ import {
   paginated,
   rejectRequestBodySchema,
   SCHEDULE_PROBLEM_MESSAGES,
+  updateFlightRequestBodySchema,
   validateScheduleWindow,
   type FlightRequest,
 } from '@acm/shared';
@@ -24,7 +25,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
 import { recordChanges } from '../lib/changefeed';
 import { nextCode } from '../lib/codes';
-import { conflict, notFound, unprocessable } from '../lib/errors';
+import { conflict, forbidden, notFound, unprocessable } from '../lib/errors';
 import { enqueueEmail, requestEmailPayload } from '../lib/mailer';
 import { findUsersWithPermission, type NotifyRecipient } from '../lib/notify';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
@@ -237,6 +238,112 @@ export async function requestRoutes(app: FastifyInstance): Promise<void> {
 
       void reply.status(201);
       return toRequestDTO(created);
+    },
+  );
+
+  // ------------------------------------------------------------------ editar
+  // A equipe interna corrige o que o cliente mandou (trajeto, datas,
+  // passageiros, observações). Trocar o status direto é só do administrador.
+  route.patch(
+    '/:id',
+    {
+      preValidation: requirePermission('request:review'),
+      schema: {
+        params: idParamSchema,
+        body: updateFlightRequestBodySchema,
+        response: { 200: flightRequestSchema },
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = request.params;
+      const body = request.body;
+      const now = new Date();
+
+      if (body.status !== undefined && user.role !== 'admin') {
+        throw forbidden('Só o administrador altera o status da solicitação direto.');
+      }
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const row = await tx.flightRequest.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            code: true,
+            status: true,
+            clientId: true,
+            departureAt: true,
+            returnAt: true,
+          },
+        });
+        if (!row) throw notFound('Solicitação');
+
+        if (
+          body.status !== undefined &&
+          body.status !== row.status &&
+          row.status === 'convertida'
+        ) {
+          throw conflict('Solicitação já convertida em viagem: edite a viagem.');
+        }
+
+        const departureAt = body.departureAt ? new Date(body.departureAt) : row.departureAt;
+        const returnAt = body.returnAt ? new Date(body.returnAt) : row.returnAt;
+        const problems = validateScheduleWindow({ departureAt, returnAt, now, allowPast: true });
+        if (problems.length > 0) {
+          throw unprocessable(SCHEDULE_PROBLEM_MESSAGES[problems[0] as never], problems);
+        }
+
+        if (body.pax) {
+          await assertDocumentsExist(tx, body.pax);
+          await tx.passenger.deleteMany({ where: { requestId: id } });
+          await createPassengers(tx, body.pax, { requestId: id });
+        }
+
+        // `null` = status mantido.
+        const newStatus =
+          body.status !== undefined && body.status !== row.status ? body.status : null;
+
+        await tx.flightRequest.update({
+          where: { id },
+          data: {
+            ...(body.origin === undefined ? {} : { origin: body.origin }),
+            ...(body.destination === undefined ? {} : { destination: body.destination }),
+            ...(body.departureAt === undefined ? {} : { departureAt }),
+            ...(body.returnAt === undefined ? {} : { returnAt }),
+            ...(body.notes === undefined ? {} : { notes: body.notes }),
+            ...(body.pax === undefined ? {} : { passengers: body.pax.length }),
+            ...(newStatus === null
+              ? {}
+              : {
+                  status: newStatus,
+                  reviewedById: user.id,
+                  reviewedAt: now,
+                  ...(newStatus === 'recusada' ? {} : { rejectionReason: null }),
+                }),
+          },
+        });
+
+        await recordChanges(
+          tx,
+          [{ entity: 'request', entityId: id, action: 'updated', clientScopeId: row.clientId }],
+          user.id,
+        );
+
+        await tx.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'request.update',
+            entity: 'request',
+            entityId: id,
+            before: { code: row.code, status: row.status },
+            after: { status: body.status ?? row.status, fields: Object.keys(body) },
+          },
+        });
+
+        return tx.flightRequest.findUniqueOrThrow({ where: { id }, select: requestSelect });
+      });
+
+      return toRequestDTO(updated);
     },
   );
 

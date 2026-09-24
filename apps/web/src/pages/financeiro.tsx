@@ -13,11 +13,14 @@ import {
   createChargeBodySchema,
   createPaymentBodySchema,
   MONTH_ABBR,
+  MONTH_LABELS,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHODS,
   formatDate,
   toISODate,
   TRIP_EXPENSE_FIELDS,
+  updateChargeBodySchema,
+  updatePaymentBodySchema,
   type Charge,
   type ChargeStatus,
   type Client,
@@ -53,6 +56,7 @@ import {
   Textarea,
 } from '../components/ui';
 import { api, ApiRequestError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { optionalText, useFormErrors, validateBody } from '../lib/form';
 import { useFeedback } from '../lib/feedback';
 import { queryKeys } from '../lib/query-keys';
@@ -68,26 +72,137 @@ interface Page<T> {
 
 type FinancialDashboardData = FinancialDashboard;
 
+/** "AAAA-MM" do mês corrente, no fuso local. */
+function currentMonthKey(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** "AAAA-MM" → [ano, mês 1–12]. */
+function parseMonthKey(key: string): [number, number] {
+  const [year = '', month = ''] = key.split('-');
+  return [Number(year), Number(month)];
+}
+
+/** Desloca um "AAAA-MM" em `delta` meses. */
+function shiftMonthKey(key: string, delta: number): string {
+  const [year, month] = parseMonthKey(key);
+  const d = new Date(year, month - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** "setembro de 2026". */
+function monthKeyLabel(key: string): string {
+  const [year, month] = parseMonthKey(key);
+  return `${MONTH_LABELS[month - 1] ?? ''} de ${String(year)}`;
+}
+
+/** Filtro de mês: anterior / seletor / próximo / volta ao mês atual. */
+function MonthFilter({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const current = currentMonthKey();
+  // 24 meses para trás e 12 para frente do mês atual — e o selecionado, se estiver fora.
+  const options = Array.from({ length: 37 }, (_, i) => shiftMonthKey(current, 12 - i));
+  if (!options.includes(value)) options.push(value);
+
+  return (
+    <div className="flex items-center gap-2">
+      <Btn
+        variant="outline"
+        size="icon"
+        aria-label="Mês anterior"
+        onClick={() => {
+          onChange(shiftMonthKey(value, -1));
+        }}
+      >
+        <Icon name="ChevronLeft" size={16} />
+      </Btn>
+      <Select
+        aria-label="Mês de referência"
+        className="w-48 capitalize"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+      >
+        {options.map((key) => (
+          <option key={key} value={key} className="capitalize">
+            {monthKeyLabel(key)}
+          </option>
+        ))}
+      </Select>
+      <Btn
+        variant="outline"
+        size="icon"
+        aria-label="Próximo mês"
+        onClick={() => {
+          onChange(shiftMonthKey(value, 1));
+        }}
+      >
+        <Icon name="ChevronRight" size={16} />
+      </Btn>
+      {value !== current && (
+        <Btn
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            onChange(current);
+          }}
+        >
+          Mês atual
+        </Btn>
+      )}
+    </div>
+  );
+}
+
 export function FinDashboard(): JSX.Element {
   const navigate = useNavigate();
+  const [month, setMonth] = useState(currentMonthKey);
   const query = useQuery({
-    queryKey: queryKeys.dashboardFin,
-    queryFn: () => api.get<FinancialDashboardData>('/dashboard/financeiro'),
+    queryKey: [...queryKeys.dashboardFin, month],
+    queryFn: () => api.get<FinancialDashboardData>('/dashboard/financeiro', { month }),
+    // Mantém o mês anterior na tela enquanto o novo carrega, sem piscar o loading.
+    placeholderData: (previous) => previous,
   });
 
-  if (query.isPending) return <Loading />;
+  const head = (
+    <PageHead
+      title="Dashboard financeiro"
+      desc={`Resumo de recebíveis e situação das cobranças · ${monthKeyLabel(month)}.`}
+    >
+      <MonthFilter value={month} onChange={setMonth} />
+    </PageHead>
+  );
+
+  if (query.isPending) {
+    return (
+      <div className="space-y-6">
+        {head}
+        <Loading />
+      </div>
+    );
+  }
   if (query.isError) {
-    return <ErrorState message="Não foi possível carregar." onRetry={() => void query.refetch()} />;
+    return (
+      <div className="space-y-6">
+        {head}
+        <ErrorState message="Não foi possível carregar." onRetry={() => void query.refetch()} />
+      </div>
+    );
   }
 
   const d = query.data;
+  const isCurrentMonth = month === currentMonthKey();
 
   return (
-    <div className="space-y-6">
-      <PageHead
-        title="Dashboard financeiro"
-        desc="Resumo de recebíveis e situação das cobranças."
-      />
+    <div className={`space-y-6 transition-opacity ${query.isPlaceholderData ? 'opacity-60' : ''}`}>
+      {head}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
@@ -101,20 +216,21 @@ export function FinDashboard(): JSX.Element {
           value={Money.formatBRL(d.receivedThisMonth)}
           icon="TrendingUp"
           tone="success"
+          hint="Pagamentos do mês selecionado"
+        />
+        <Stat
+          label="A receber no mês"
+          value={Money.formatBRL(d.receivableInMonth)}
+          icon="CalendarClock"
+          tone="warning"
+          hint="Saldo com vencimento no mês"
         />
         <Stat
           label="Em atraso"
           value={Money.formatBRL(d.overdueAmount)}
           icon="AlertTriangle"
           tone="danger"
-          hint="Vencido e não pago"
-        />
-        <Stat
-          label="Próx. vencimentos"
-          value={d.dueSoonCount}
-          icon="CalendarClock"
-          tone="warning"
-          hint={`Próximos ${d.dueSoonDays} dias`}
+          hint="Vencido e não pago (hoje)"
         />
       </div>
 
@@ -123,7 +239,8 @@ export function FinDashboard(): JSX.Element {
           <div>
             <h3 className="font-semibold">Custos das viagens</h3>
             <p className="text-sm text-sub">
-              Lançados no cadastro de cada viagem · mês atual (pela data de ida)
+              Lançados no cadastro de cada viagem ·{' '}
+              {isCurrentMonth ? 'mês atual' : monthKeyLabel(month)} (pela data de ida)
             </p>
           </div>
           <div className="text-right">
@@ -176,7 +293,7 @@ export function FinDashboard(): JSX.Element {
           <div className="flex items-center justify-between p-5 pb-3">
             <div>
               <h3 className="font-semibold">Cobranças em aberto</h3>
-              <p className="text-sm text-sub">Ordenadas por vencimento</p>
+              <p className="text-sm text-sub">Com vencimento no mês · ordenadas por vencimento</p>
             </div>
             <Btn
               variant="ghost"
@@ -189,7 +306,7 @@ export function FinDashboard(): JSX.Element {
             </Btn>
           </div>
           {d.openCharges.length === 0 ? (
-            <Empty icon="Banknote" title="Nada em aberto" />
+            <Empty icon="Banknote" title="Nada em aberto neste mês" />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -223,7 +340,9 @@ export function FinDashboard(): JSX.Element {
         <Card>
           <div className="p-5 pb-3">
             <h3 className="font-semibold">Próximos vencimentos</h3>
-            <p className="text-sm text-sub">Nos próximos {d.dueSoonDays} dias</p>
+            <p className="text-sm text-sub">
+              {d.dueSoonCount} nos próximos {d.dueSoonDays} dias (a partir de hoje)
+            </p>
           </div>
           <div className="space-y-2 px-5 pb-5">
             {d.dueSoon.length === 0 ? (
@@ -255,10 +374,13 @@ export function FinDashboard(): JSX.Element {
 
 export function FinRecebiveis(): JSX.Element {
   const { confirm, notify, notifyError } = useFeedback();
+  const { can } = useAuth();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'all' | ChargeStatus>('all');
   const [payFor, setPayFor] = useState<Charge | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Charge | null>(null);
 
   const charges = useQuery({
     queryKey: queryKeys.chargeList({ q: search, status }),
@@ -294,13 +416,16 @@ export function FinRecebiveis(): JSX.Element {
   return (
     <div className="space-y-6">
       <PageHead title="Financeiro" desc="Recebíveis, saldos e status de cada cobrança.">
-        <Btn
-          onClick={() => {
-            setPayFor(null);
-          }}
-        >
-          <Icon name="Banknote" size={16} /> Registrar pagamento
-        </Btn>
+        {can('charge:create') && (
+          <Btn
+            onClick={() => {
+              setEditing(null);
+              setFormOpen(true);
+            }}
+          >
+            <Icon name="Plus" size={16} /> Nova cobrança
+          </Btn>
+        )}
       </PageHead>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -388,6 +513,15 @@ export function FinRecebiveis(): JSX.Element {
                         <Menu
                           items={[
                             {
+                              label: 'Editar cobrança',
+                              icon: 'Pencil',
+                              hidden: !can('charge:update'),
+                              onClick: () => {
+                                setEditing(charge);
+                                setFormOpen(true);
+                              },
+                            },
+                            {
                               label: 'Registrar pagamento',
                               icon: 'Banknote',
                               hidden: !open,
@@ -422,6 +556,13 @@ export function FinRecebiveis(): JSX.Element {
         )}
       </Card>
 
+      <ChargeForm
+        open={formOpen}
+        onClose={() => {
+          setFormOpen(false);
+        }}
+        editing={editing}
+      />
       <PaymentForm
         charge={payFor}
         onClose={() => {
@@ -437,8 +578,10 @@ export function FinRecebiveis(): JSX.Element {
 // ============================================================================
 
 export function FinCobrancas(): JSX.Element {
+  const { can } = useAuth();
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Charge | null>(null);
   const [payFor, setPayFor] = useState<Charge | null>(null);
 
   const charges = useQuery({
@@ -451,6 +594,7 @@ export function FinCobrancas(): JSX.Element {
       <PageHead title="Cobranças" desc="Crie e acompanhe as cobranças emitidas.">
         <Btn
           onClick={() => {
+            setEditing(null);
             setFormOpen(true);
           }}
         >
@@ -502,6 +646,15 @@ export function FinCobrancas(): JSX.Element {
                       <Menu
                         items={[
                           {
+                            label: 'Editar cobrança',
+                            icon: 'Pencil',
+                            hidden: !can('charge:update'),
+                            onClick: () => {
+                              setEditing(charge);
+                              setFormOpen(true);
+                            },
+                          },
+                          {
                             label: 'Registrar pagamento',
                             icon: 'Banknote',
                             hidden: !Money.isPositive(charge.balance),
@@ -525,6 +678,7 @@ export function FinCobrancas(): JSX.Element {
         onClose={() => {
           setFormOpen(false);
         }}
+        editing={editing}
       />
       <PaymentForm
         charge={payFor}
@@ -536,16 +690,41 @@ export function FinCobrancas(): JSX.Element {
   );
 }
 
-function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
+/**
+ * Criar ou editar cobrança. Nenhum campo é obrigatório: sem cliente, vale o da
+ * viagem (ou "Cliente a definir"); sem valor, R$ 0; sem vencimento, hoje.
+ */
+function ChargeForm({
+  open,
+  onClose,
+  editing = null,
+}: {
+  open: boolean;
+  onClose: () => void;
+  editing?: Charge | null;
+}): JSX.Element {
   const queryClient = useQueryClient();
   const { notify, notifyError } = useFeedback();
   const { setErrors, setServerErrors, clearAll, errorOf } = useFormErrors();
-  const [form, setForm] = useState({ clientId: '', tripId: '', total: '', dueDate: '' });
+  const empty = { clientId: '', tripId: '', total: '', dueDate: '', description: '' };
+  const [form, setForm] = useState(empty);
 
   const [lastOpen, setLastOpen] = useState(false);
   if (open !== lastOpen) {
     setLastOpen(open);
-    if (open) setForm({ clientId: '', tripId: '', total: '', dueDate: '' });
+    if (open) {
+      setForm(
+        editing
+          ? {
+              clientId: editing.clientId,
+              tripId: editing.tripId ?? '',
+              total: editing.total,
+              dueDate: editing.dueDate,
+              description: editing.description ?? '',
+            }
+          : empty,
+      );
+    }
   }
 
   const clients = useQuery({
@@ -554,19 +733,30 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
     enabled: open,
   });
 
+  // Sem cliente escolhido, lista as viagens de todos: escolher a viagem já
+  // define o cliente da cobrança.
   const trips = useQuery({
-    queryKey: queryKeys.tripList({ clientId: form.clientId }),
-    queryFn: () => api.get<Page<TripInternal>>('/trips', { clientId: form.clientId, limit: 50 }),
-    enabled: open && form.clientId !== '',
+    queryKey: queryKeys.tripList({ clientId: form.clientId, forCharge: true }),
+    queryFn: () =>
+      api.get<Page<TripInternal>>('/trips', {
+        limit: 50,
+        ...(form.clientId === '' ? {} : { clientId: form.clientId }),
+      }),
+    enabled: open,
   });
 
   const save = useMutation({
     // Corpo já validado pelo contrato — ver `submit` abaixo.
-    mutationFn: (body: Record<string, unknown>) => api.post<Charge>('/charges', body),
+    mutationFn: (body: Record<string, unknown>) =>
+      editing
+        ? api.patch<Charge>(`/charges/${editing.id}`, body)
+        : api.post<Charge>('/charges', body),
     onSuccess: (charge) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.charges });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.payments });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.clients });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardFin });
-      notify('success', 'Cobrança criada', charge.code);
+      notify('success', editing ? 'Cobrança atualizada' : 'Cobrança criada', charge.code);
       onClose();
     },
     onError: (e) => {
@@ -575,18 +765,17 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
     },
   });
 
-  const valid = form.clientId !== '' && form.total !== '' && form.dueDate !== '';
-
   /** Valida com o MESMO schema Zod da rota antes de enviar. */
   const submit = (): void => {
     const raw = {
-      clientId: form.clientId,
+      clientId: optionalText(form.clientId),
       tripId: form.tripId === '' ? null : form.tripId,
-      total: form.total,
-      dueDate: form.dueDate,
+      total: form.total.trim() === '' ? (editing ? undefined : '0') : form.total,
+      dueDate: optionalText(form.dueDate),
+      description: editing ? form.description.trim() || null : optionalText(form.description),
     };
 
-    const result = validateBody(createChargeBodySchema, raw);
+    const result = validateBody(editing ? updateChargeBodySchema : createChargeBodySchema, raw);
     if (!result.ok) {
       setErrors(result.errors);
       notify('error', 'Verifique os campos destacados', Object.values(result.errors)[0]);
@@ -597,32 +786,40 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
     save.mutate(raw);
   };
 
+  // Já pago na cobrança em edição: o total não pode ficar abaixo disso.
+  const paidAmount =
+    editing !== null && Money.isPositive(editing.paidAmount) ? editing.paidAmount : null;
+
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Nova cobrança"
-      desc="Crie uma cobrança para um cliente, ligada ou não a uma viagem."
+      title={editing ? `Editar cobrança ${editing.code}` : 'Nova cobrança'}
+      desc="Nenhum campo é obrigatório — salve o que tiver e complete depois pelo Editar."
       footer={
         <>
           <Btn variant="outline" onClick={onClose}>
             Cancelar
           </Btn>
-          <Btn onClick={submit} disabled={!valid || save.isPending}>
-            Criar cobrança
+          <Btn onClick={submit} disabled={save.isPending}>
+            {editing ? 'Salvar alterações' : 'Criar cobrança'}
           </Btn>
         </>
       }
     >
       <div className="grid gap-4">
-        <Field label="Cliente" required help="Para quem é a cobrança." error={errorOf('clientId')}>
+        <Field
+          label="Cliente"
+          help="Para quem é a cobrança. Em branco, usa o cliente da viagem (ou 'Cliente a definir')."
+          error={errorOf('clientId')}
+        >
           <Select
             value={form.clientId}
             onChange={(e) => {
               setForm((s) => ({ ...s, clientId: e.target.value, tripId: '' }));
             }}
           >
-            <option value="">Selecione</option>
+            <option value="">A definir (escolher depois)</option>
             {(clients.data?.items ?? []).map((client) => (
               <option key={client.id} value={client.id}>
                 {client.name}
@@ -631,20 +828,18 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
           </Select>
         </Field>
 
-        <Field label="Viagem" help="Viagem relacionada (opcional).">
+        <Field label="Viagem" help="Viagem relacionada (opcional)." error={errorOf('tripId')}>
           <Select
             value={form.tripId}
-            disabled={form.clientId === ''}
             onChange={(e) => {
               setForm((s) => ({ ...s, tripId: e.target.value }));
             }}
           >
-            <option value="">
-              {form.clientId === '' ? 'Escolha o cliente primeiro' : 'Sem viagem específica'}
-            </option>
+            <option value="">Sem viagem específica</option>
             {(trips.data?.items ?? []).map((trip) => (
               <option key={trip.id} value={trip.id}>
                 {trip.code} · {trip.origin} → {trip.destination}
+                {form.clientId === '' && trip.client !== null ? ` · ${trip.client.name}` : ''}
               </option>
             ))}
           </Select>
@@ -653,12 +848,16 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Valor total"
-            required
-            help="Valor da cobrança (R$)."
+            help={
+              paidAmount !== null
+                ? `Não pode ficar abaixo do já pago (${Money.formatBRL(paidAmount)}).`
+                : 'Valor da cobrança (R$). Em branco, R$ 0.'
+            }
             error={errorOf('total')}
           >
             <Input
               type="number"
+              min="0"
               step="0.01"
               value={form.total}
               onChange={(e) => {
@@ -669,8 +868,7 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
           </Field>
           <Field
             label="Vencimento"
-            required
-            help="Data limite para pagamento."
+            help="Data limite para pagamento. Em branco, hoje."
             error={errorOf('dueDate')}
           >
             <Input
@@ -682,6 +880,16 @@ function ChargeForm({ open, onClose }: { open: boolean; onClose: () => void }): 
             />
           </Field>
         </div>
+
+        <Field label="Descrição" help="Anotação opcional." error={errorOf('description')}>
+          <Textarea
+            value={form.description}
+            onChange={(e) => {
+              setForm((s) => ({ ...s, description: e.target.value }));
+            }}
+            placeholder="Ex: fretamento SP–RJ, ida e volta."
+          />
+        </Field>
       </div>
     </Modal>
   );
@@ -849,6 +1057,179 @@ function PaymentForm({
   );
 }
 
+/**
+ * Editar um pagamento já lançado. O saldo e o status da cobrança são
+ * recontados no servidor; o limite do valor é o total da cobrança menos os
+ * OUTROS pagamentos.
+ */
+function EditPaymentForm({
+  payment,
+  onClose,
+}: {
+  payment: PaymentHistoryItem | null;
+  onClose: () => void;
+}): JSX.Element | null {
+  const queryClient = useQueryClient();
+  const { notify, notifyError } = useFeedback();
+  const { setErrors, setServerErrors, clearAll, errorOf } = useFormErrors();
+
+  const [amount, setAmount] = useState('');
+  const [paidAt, setPaidAt] = useState('');
+  const [method, setMethod] = useState<(typeof PAYMENT_METHODS)[number]>('pix');
+  const [note, setNote] = useState('');
+
+  const [lastId, setLastId] = useState<string | null>(null);
+  if (payment !== null && payment.id !== lastId) {
+    setLastId(payment.id);
+    setAmount(payment.amount);
+    setPaidAt(payment.paidAt);
+    setMethod(payment.method);
+    setNote(payment.note ?? '');
+  }
+  if (payment === null && lastId !== null) setLastId(null);
+
+  const charge = useQuery({
+    queryKey: [...queryKeys.charges, 'detail', payment?.chargeId ?? ''],
+    queryFn: () => api.get<Charge>(`/charges/${payment?.chargeId ?? ''}`),
+    enabled: payment !== null,
+  });
+
+  const save = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.patch<Charge>(`/payments/${payment?.id ?? ''}`, body),
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.charges });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.payments });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardFin });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.clients });
+      notify(
+        'success',
+        'Pagamento atualizado',
+        `Saldo da ${updated.code}: ${Money.formatBRL(updated.balance)}`,
+      );
+      onClose();
+    },
+    onError: (e) => {
+      if (e instanceof ApiRequestError) setServerErrors(e.details);
+      notifyError(e);
+    },
+  });
+
+  if (payment === null) return null;
+
+  // Espaço para este pagamento: saldo atual + o valor que ele já ocupa.
+  const room = charge.data === undefined ? null : Money.add(charge.data.balance, payment.amount);
+  const exceeds = room !== null && Money.toCents(amount || '0') > Money.toCents(room);
+
+  const submit = (): void => {
+    const raw = {
+      amount: amount.trim() === '' ? undefined : amount,
+      paidAt: optionalText(paidAt),
+      method,
+      note: note.trim() === '' ? null : note.trim(),
+    };
+
+    const result = validateBody(updatePaymentBodySchema, raw);
+    if (!result.ok) {
+      setErrors(result.errors);
+      notify('error', 'Verifique os campos destacados', Object.values(result.errors)[0]);
+      return;
+    }
+
+    clearAll();
+    save.mutate(raw);
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Editar pagamento"
+      desc={`Cobrança ${payment.chargeCode} · ${payment.clientName}`}
+      footer={
+        <>
+          <Btn variant="outline" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn onClick={submit} disabled={exceeds || save.isPending}>
+            Salvar alterações
+          </Btn>
+        </>
+      }
+    >
+      <div className="grid gap-4">
+        {charge.data !== undefined && (
+          <div className="grid grid-cols-3 gap-2 rounded-lg bg-soft p-3 text-center text-sm">
+            <div>
+              <p className="text-xs text-sub">Total</p>
+              <p className="font-semibold">{Money.formatBRL(charge.data.total)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-sub">Já pago</p>
+              <p className="font-semibold">{Money.formatBRL(charge.data.paidAmount)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-sub">Máximo para este</p>
+              <p className="font-semibold text-primary">{Money.formatBRL(room)}</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Valor recebido"
+            help="Em branco, mantém o valor atual."
+            error={exceeds ? `Não pode passar de ${Money.formatBRL(room)}.` : errorOf('amount')}
+          >
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+              }}
+            />
+          </Field>
+          <Field label="Data" help="Data do recebimento." error={errorOf('paidAt')}>
+            <Input
+              type="date"
+              value={paidAt}
+              onChange={(e) => {
+                setPaidAt(e.target.value);
+              }}
+            />
+          </Field>
+        </div>
+
+        <Field label="Forma de pagamento" error={errorOf('method')}>
+          <Select
+            value={method}
+            onChange={(e) => {
+              setMethod(e.target.value as (typeof PAYMENT_METHODS)[number]);
+            }}
+          >
+            {PAYMENT_METHODS.map((m) => (
+              <option key={m} value={m}>
+                {PAYMENT_METHOD_LABELS[m]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="Observação" help="Anotação opcional." error={errorOf('note')}>
+          <Textarea
+            value={note}
+            onChange={(e) => {
+              setNote(e.target.value);
+            }}
+          />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
 // ============================================================================
 //  PAGAMENTOS
 // ============================================================================
@@ -856,7 +1237,23 @@ function PaymentForm({
 export function FinPagamentos(): JSX.Element {
   const queryClient = useQueryClient();
   const { confirm, notify, notifyError } = useFeedback();
+  const { can } = useAuth();
   const [payFor, setPayFor] = useState<Charge | null>(null);
+  const [editingPayment, setEditingPayment] = useState<PaymentHistoryItem | null>(null);
+
+  const reverse = useMutation({
+    mutationFn: (payment: PaymentHistoryItem) => api.post(`/payments/${payment.id}/reverse`, {}),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.charges });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.payments });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardFin });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.clients });
+      notify('success', 'Pagamento estornado', 'O valor voltou para o saldo da cobrança.');
+    },
+    onError: (e) => {
+      notifyError(e);
+    },
+  });
 
   const payments = useQuery({
     queryKey: queryKeys.paymentList({}),
@@ -911,6 +1308,7 @@ export function FinPagamentos(): JSX.Element {
                     <TH>Cobrança</TH>
                     <TH>Forma</TH>
                     <TH>Valor</TH>
+                    <TH />
                   </tr>
                 </thead>
                 <tbody>
@@ -924,6 +1322,38 @@ export function FinPagamentos(): JSX.Element {
                       </TD>
                       <TD className="font-medium text-success">
                         {Money.formatBRL(payment.amount)}
+                      </TD>
+                      <TD>
+                        <Menu
+                          items={[
+                            {
+                              label: 'Editar',
+                              icon: 'Pencil',
+                              hidden: !can('payment:update'),
+                              onClick: () => {
+                                setEditingPayment(payment);
+                              },
+                            },
+                            {
+                              label: 'Estornar',
+                              icon: 'RefreshCw',
+                              danger: true,
+                              separator: true,
+                              hidden: !can('payment:reverse'),
+                              onClick: () => {
+                                confirm({
+                                  title: 'Estornar pagamento?',
+                                  desc: `${Money.formatBRL(payment.amount)} de ${payment.clientName} (${payment.chargeCode}) volta para o saldo da cobrança.`,
+                                  danger: true,
+                                  confirmLabel: 'Estornar',
+                                  onConfirm: () => {
+                                    reverse.mutate(payment);
+                                  },
+                                });
+                              },
+                            },
+                          ]}
+                        />
                       </TD>
                     </tr>
                   ))}
@@ -994,6 +1424,12 @@ export function FinPagamentos(): JSX.Element {
         charge={payFor}
         onClose={() => {
           setPayFor(null);
+        }}
+      />
+      <EditPaymentForm
+        payment={editingPayment}
+        onClose={() => {
+          setEditingPayment(null);
         }}
       />
     </div>

@@ -10,6 +10,7 @@ import {
   COST_FIELDS,
   KIND_LABELS,
   Money,
+  REQUEST_STATUS_LABELS,
   ROLE_KEYS,
   ROLE_LABELS,
   TARIFF_UNIT_LABELS,
@@ -18,18 +19,22 @@ import {
   updateAircraftBodySchema,
   updateTariffBodySchema,
   TARIFF_UNITS,
+  TRIP_EXPENSE_FIELDS,
   TRIP_STATUS_LABELS,
   TRIP_STATUSES,
   addDays,
+  combineDateTime,
   addMonths,
   formatDate,
   formatDateTime,
   LOCKED_TRIP_STATUSES,
   toISODate,
+  updateFlightRequestBodySchema,
   type Aircraft,
   type CalendarEvent,
   type Client,
   type FlightRequest,
+  type FlightRequestStatus,
   type RoleKey,
   type Settings,
   type Tariff,
@@ -43,7 +48,13 @@ import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Calendar } from '../components/Calendar';
-import { PassengerList } from '../components/PassengersEditor';
+import {
+  newPassenger,
+  PassengerList,
+  PassengersEditor,
+  toPassengerBody,
+  type PassengerDraft,
+} from '../components/PassengersEditor';
 import { TripForm, type TripPrefill } from '../components/TripForm';
 import {
   AircraftBadge,
@@ -65,17 +76,19 @@ import {
   RequestBadge,
   SearchBox,
   Select,
+  Spinner,
   Stat,
   Tabs,
   TD,
   TH,
+  Textarea,
   Toggle,
   TripBadge,
   UserBadge,
 } from '../components/ui';
 import { api, ApiRequestError } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { optionalText, useFormErrors, validateBody } from '../lib/form';
+import { optionalText, toIsoDateTime, useFormErrors, validateBody } from '../lib/form';
 import { useFeedback } from '../lib/feedback';
 import { queryKeys } from '../lib/query-keys';
 
@@ -308,12 +321,28 @@ export function OpDashboard(): JSX.Element {
 // ============================================================================
 
 export function OpAgenda(): JSX.Element {
-  const { role } = useAuth();
+  const { role, can } = useAuth();
+  const { notifyError } = useFeedback();
   const today = new Date();
   const [cursor, setCursor] = useState(today);
   const [selected, setSelected] = useState<CalendarEvent | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [prefill, setPrefill] = useState<TripPrefill | null>(null);
+  const [editing, setEditing] = useState<TripInternal | null>(null);
+
+  // O evento da agenda é um resumo; para editar, busca a viagem inteira.
+  const openTrip = useMutation({
+    mutationFn: (id: string) => api.get<TripInternal>(`/trips/${id}`),
+    onSuccess: (trip) => {
+      setSelected(null);
+      setPrefill(null);
+      setEditing(trip);
+      setFormOpen(true);
+    },
+    onError: (e) => {
+      notifyError(e);
+    },
+  });
 
   // Janela de 3 meses ao redor do cursor: cobre a navegação sem refazer a busca
   // a cada clique, e respeita o teto de janela do servidor.
@@ -354,6 +383,7 @@ export function OpAgenda(): JSX.Element {
           today={today}
           allowPastPick={role === 'admin'}
           onDayClick={(day) => {
+            setEditing(null);
             setPrefill({ departureDate: toISODate(day) });
             setFormOpen(true);
           }}
@@ -366,6 +396,7 @@ export function OpAgenda(): JSX.Element {
           setFormOpen(false);
         }}
         prefill={prefill}
+        editing={editing}
       />
 
       <Modal
@@ -375,6 +406,22 @@ export function OpAgenda(): JSX.Element {
         }}
         size="max-w-md"
         title={selected?.kind === 'trip' ? 'Detalhe do voo' : (selected?.title ?? '')}
+        footer={
+          selected?.kind === 'trip' &&
+          can('trip:update') &&
+          (role === 'admin' ||
+            selected.status === null ||
+            !LOCKED_TRIP_STATUSES.includes(selected.status)) && (
+            <Btn
+              disabled={openTrip.isPending}
+              onClick={() => {
+                openTrip.mutate(selected.id);
+              }}
+            >
+              {openTrip.isPending ? <Spinner /> : <Icon name="Pencil" size={16} />} Editar viagem
+            </Btn>
+          )
+        }
       >
         {selected !== null && (
           <div className="space-y-3 text-sm">
@@ -424,6 +471,7 @@ export function OpSolicitacoes(): JSX.Element {
   const [detail, setDetail] = useState<FlightRequest | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [prefill, setPrefill] = useState<TripPrefill | null>(null);
+  const [editingRequest, setEditingRequest] = useState<FlightRequest | null>(null);
 
   const requests = useQuery({
     queryKey: queryKeys.requestList({ q: search }),
@@ -544,6 +592,13 @@ export function OpSolicitacoes(): JSX.Element {
                               },
                             },
                             {
+                              label: 'Editar',
+                              icon: 'Pencil',
+                              onClick: () => {
+                                setEditingRequest(request);
+                              },
+                            },
+                            {
                               label: 'Marcar em análise',
                               icon: 'ClipboardCheck',
                               hidden: request.status !== 'aguardando_analise',
@@ -597,6 +652,13 @@ export function OpSolicitacoes(): JSX.Element {
         prefill={prefill}
       />
 
+      <RequestForm
+        request={editingRequest}
+        onClose={() => {
+          setEditingRequest(null);
+        }}
+      />
+
       <Modal
         open={detail !== null}
         onClose={() => {
@@ -605,26 +667,27 @@ export function OpSolicitacoes(): JSX.Element {
         title={detail?.code ?? ''}
         desc="Solicitação de voo do cliente"
         footer={
-          detail !== null &&
-          detail.status !== 'convertida' &&
-          detail.status !== 'recusada' && (
+          detail !== null && (
             <>
               <Btn
                 variant="outline"
                 onClick={() => {
+                  setEditingRequest(detail);
                   setDetail(null);
                 }}
               >
-                Fechar
+                <Icon name="Pencil" size={16} /> Editar
               </Btn>
-              <Btn
-                onClick={() => {
-                  convert(detail);
-                  setDetail(null);
-                }}
-              >
-                <Icon name="PlaneTakeoff" size={16} /> Agendar viagem
-              </Btn>
+              {detail.status !== 'convertida' && detail.status !== 'recusada' && (
+                <Btn
+                  onClick={() => {
+                    convert(detail);
+                    setDetail(null);
+                  }}
+                >
+                  <Icon name="PlaneTakeoff" size={16} /> Agendar viagem
+                </Btn>
+              )}
             </>
           )
         }
@@ -665,6 +728,250 @@ export function OpSolicitacoes(): JSX.Element {
   );
 }
 
+/**
+ * Edição de uma solicitação do cliente — trajeto, datas, passageiros e
+ * observações. O status só aparece para o administrador, e `convertida` não é
+ * opção: essa mudança acontece agendando a viagem.
+ */
+function RequestForm({
+  request,
+  onClose,
+}: {
+  request: FlightRequest | null;
+  onClose: () => void;
+}): JSX.Element | null {
+  const queryClient = useQueryClient();
+  const { notify, notifyError } = useFeedback();
+  const { role } = useAuth();
+  const { setErrors, setServerErrors, clearAll, errorOf } = useFormErrors();
+
+  const [form, setForm] = useState({
+    origin: '',
+    destination: '',
+    departureDate: '',
+    departureTime: '',
+    returnDate: '',
+    returnTime: '',
+    notes: '',
+    status: 'aguardando_analise' as FlightRequestStatus,
+  });
+  const [pax, setPax] = useState<PassengerDraft[]>([newPassenger()]);
+
+  const [lastId, setLastId] = useState<string | null>(null);
+  if (request !== null && request.id !== lastId) {
+    setLastId(request.id);
+    setForm({
+      origin: request.origin,
+      destination: request.destination,
+      departureDate: toISODate(request.departureAt),
+      departureTime: new Date(request.departureAt).toTimeString().slice(0, 5),
+      returnDate: toISODate(request.returnAt),
+      returnTime: new Date(request.returnAt).toTimeString().slice(0, 5),
+      notes: request.notes ?? '',
+      status: request.status,
+    });
+    setPax(
+      request.pax.length > 0
+        ? request.pax.map((p) => ({
+            key: p.id,
+            name: p.name,
+            documentFileId: p.documentFileId,
+            uploading: false,
+          }))
+        : [newPassenger()],
+    );
+  }
+  if (request === null && lastId !== null) setLastId(null);
+
+  const save = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.patch<FlightRequest>(`/requests/${request?.id ?? ''}`, body),
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.requests });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardOp });
+      notify('success', 'Solicitação atualizada', updated.code);
+      onClose();
+    },
+    onError: (e) => {
+      if (e instanceof ApiRequestError) setServerErrors(e.details);
+      notifyError(e);
+    },
+  });
+
+  if (request === null) return null;
+
+  const isAdmin = role === 'admin';
+  const converted = request.status === 'convertida';
+
+  // Mesmas regras do formulário de viagem: hora em branco = dia inteiro, data
+  // da volta em branco = mesmo dia da ida.
+  const departureDate = form.departureDate || form.returnDate || toISODate(new Date());
+  const returnDate = form.returnDate || departureDate;
+  const departureTime = form.departureTime === '' ? '00:00' : form.departureTime;
+  const returnTime = form.returnTime === '' ? '23:59' : form.returnTime;
+  const scheduleValid =
+    new Date(combineDateTime(returnDate, returnTime)).getTime() >
+    new Date(combineDateTime(departureDate, departureTime)).getTime();
+
+  const submit = (): void => {
+    const raw = {
+      // String vazia vira "A definir" no contrato.
+      origin: form.origin.trim(),
+      destination: form.destination.trim(),
+      departureAt: toIsoDateTime(departureDate, departureTime) ?? undefined,
+      returnAt: toIsoDateTime(returnDate, returnTime) ?? undefined,
+      notes: form.notes,
+      pax: toPassengerBody(pax),
+      ...(isAdmin && !converted && form.status !== 'convertida' ? { status: form.status } : {}),
+    };
+
+    const result = validateBody(updateFlightRequestBodySchema, raw);
+    if (!result.ok) {
+      setErrors(result.errors);
+      notify('error', 'Verifique os campos destacados', Object.values(result.errors)[0]);
+      return;
+    }
+
+    clearAll();
+    save.mutate(raw);
+  };
+
+  const field = (key: keyof typeof form, value: string): void => {
+    setForm((s) => ({ ...s, [key]: value }));
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="max-w-2xl"
+      title={`Editar ${request.code}`}
+      desc={`Solicitação de ${request.client?.name ?? 'cliente'}. Nenhum campo é obrigatório.`}
+      footer={
+        <>
+          <Btn variant="outline" onClick={onClose} disabled={save.isPending}>
+            Cancelar
+          </Btn>
+          <Btn
+            onClick={submit}
+            disabled={!scheduleValid || save.isPending || pax.some((p) => p.uploading)}
+          >
+            {save.isPending ? <Spinner /> : <Icon name="Save" size={16} />} Salvar alterações
+          </Btn>
+        </>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Origem" help="Em branco, fica 'A definir'." error={errorOf('origin')}>
+          <Input
+            value={form.origin}
+            onChange={(e) => {
+              field('origin', e.target.value);
+            }}
+          />
+        </Field>
+        <Field label="Destino" help="Em branco, fica 'A definir'." error={errorOf('destination')}>
+          <Input
+            value={form.destination}
+            onChange={(e) => {
+              field('destination', e.target.value);
+            }}
+          />
+        </Field>
+        <Field label="Data da ida" help="Dia do embarque." error={errorOf('departureAt')}>
+          <Input
+            type="date"
+            value={form.departureDate}
+            onChange={(e) => {
+              field('departureDate', e.target.value);
+            }}
+          />
+        </Field>
+        <Field label="Hora de ida" help="Em branco, considera o dia todo.">
+          <Input
+            type="time"
+            value={form.departureTime}
+            onChange={(e) => {
+              field('departureTime', e.target.value);
+            }}
+          />
+        </Field>
+        <Field
+          label="Data da volta"
+          help="Em branco, o mesmo dia da ida."
+          error={
+            errorOf('returnAt') ??
+            (scheduleValid ? undefined : 'A volta precisa ser depois da ida.')
+          }
+        >
+          <Input
+            type="date"
+            value={form.returnDate}
+            onChange={(e) => {
+              field('returnDate', e.target.value);
+            }}
+          />
+        </Field>
+        <Field label="Hora de volta" help="Em branco, considera o dia todo.">
+          <Input
+            type="time"
+            value={form.returnTime}
+            onChange={(e) => {
+              field('returnTime', e.target.value);
+            }}
+          />
+        </Field>
+
+        {isAdmin && (
+          <Field
+            label="Status"
+            help={
+              converted
+                ? 'Já virou viagem — para mudar, edite a viagem.'
+                : 'Só o administrador troca direto.'
+            }
+            error={errorOf('status')}
+          >
+            <Select
+              value={form.status}
+              disabled={converted}
+              onChange={(e) => {
+                field('status', e.target.value);
+              }}
+            >
+              {(['aguardando_analise', 'em_analise', 'recusada'] as const).map((s) => (
+                <option key={s} value={s}>
+                  {REQUEST_STATUS_LABELS[s]}
+                </option>
+              ))}
+              {converted && <option value="convertida">{REQUEST_STATUS_LABELS.convertida}</option>}
+            </Select>
+          </Field>
+        )}
+
+        <div className="sm:col-span-2">
+          <p className="mb-1 text-sm font-semibold">Passageiros</p>
+          {errorOf('pax') !== undefined && (
+            <p className="mb-2 text-xs text-danger">{errorOf('pax')}</p>
+          )}
+          <PassengersEditor value={pax} onChange={setPax} />
+        </div>
+
+        <div className="sm:col-span-2">
+          <Field label="Observações" help="Informações extras." error={errorOf('notes')}>
+            <Textarea
+              value={form.notes}
+              onChange={(e) => {
+                field('notes', e.target.value);
+              }}
+            />
+          </Field>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ============================================================================
 //  VIAGENS
 // ============================================================================
@@ -672,6 +979,10 @@ export function OpSolicitacoes(): JSX.Element {
 export function OpViagens(): JSX.Element {
   const queryClient = useQueryClient();
   const { notify, notifyError, confirm } = useFeedback();
+  const { role } = useAuth();
+  // O administrador edita qualquer viagem; os demais, só as que não fecharam.
+  const canEdit = (trip: TripInternal): boolean =>
+    role === 'admin' || !LOCKED_TRIP_STATUSES.includes(trip.status);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'all' | TripStatus>('all');
   const [formOpen, setFormOpen] = useState(false);
@@ -795,7 +1106,7 @@ export function OpViagens(): JSX.Element {
                           {
                             label: 'Editar',
                             icon: 'Pencil',
-                            hidden: LOCKED_TRIP_STATUSES.includes(trip.status),
+                            hidden: !canEdit(trip),
                             onClick: () => {
                               setEditing(trip);
                               setFormOpen(true);
@@ -847,6 +1158,20 @@ export function OpViagens(): JSX.Element {
         size="max-w-lg"
         title={detail?.code ?? ''}
         desc={detail?.client?.name ?? ''}
+        footer={
+          detail !== null &&
+          canEdit(detail) && (
+            <Btn
+              onClick={() => {
+                setEditing(detail);
+                setDetail(null);
+                setFormOpen(true);
+              }}
+            >
+              <Icon name="Pencil" size={16} /> Editar viagem
+            </Btn>
+          )
+        }
       >
         {detail !== null && (
           <div className="space-y-4">
@@ -886,6 +1211,13 @@ export function OpViagens(): JSX.Element {
                   detail.commercialValue === null ? '—' : Money.formatBRL(detail.commercialValue)
                 }
               />
+              {TRIP_EXPENSE_FIELDS.map(({ key, label }) => (
+                <DetailRow
+                  key={key}
+                  label={label}
+                  value={detail[key] === null ? '—' : Money.formatBRL(detail[key])}
+                />
+              ))}
             </div>
             {detail.notes !== null && (
               <div className="rounded-lg bg-soft p-3 text-sm text-sub">{detail.notes}</div>
@@ -1345,7 +1677,15 @@ function SettingsGeneral(): JSX.Element {
   const { notify, notifyError } = useFeedback();
   const settings = useSettings();
 
-  const [form, setForm] = useState({ companyName: '', contactEmail: '', timezone: '' });
+  const [form, setForm] = useState({
+    companyName: '',
+    contactEmail: '',
+    timezone: '',
+    dueSoonDays: '',
+    documentRetentionDays: '',
+    notifyOnNewRequest: true,
+    notifyExtraEmails: '',
+  });
   const [loaded, setLoaded] = useState(false);
 
   if (!loaded && settings.data !== undefined) {
@@ -1354,11 +1694,26 @@ function SettingsGeneral(): JSX.Element {
       companyName: settings.data.companyName,
       contactEmail: settings.data.contactEmail,
       timezone: settings.data.timezone,
+      dueSoonDays: String(settings.data.dueSoonDays),
+      documentRetentionDays: String(settings.data.documentRetentionDays),
+      notifyOnNewRequest: settings.data.notifyOnNewRequest,
+      notifyExtraEmails: settings.data.notifyExtraEmails ?? '',
     });
   }
 
   const save = useMutation({
-    mutationFn: () => api.patch<Settings>('/settings', form),
+    // Campo numérico em branco não é enviado: mantém o valor gravado.
+    mutationFn: () =>
+      api.patch<Settings>('/settings', {
+        companyName: optionalText(form.companyName),
+        contactEmail: optionalText(form.contactEmail),
+        timezone: optionalText(form.timezone),
+        dueSoonDays: form.dueSoonDays.trim() === '' ? undefined : Number(form.dueSoonDays),
+        documentRetentionDays:
+          form.documentRetentionDays.trim() === '' ? undefined : Number(form.documentRetentionDays),
+        notifyOnNewRequest: form.notifyOnNewRequest,
+        notifyExtraEmails: optionalText(form.notifyExtraEmails) ?? null,
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.settings });
       notify('success', 'Configurações salvas');
@@ -1399,6 +1754,56 @@ function SettingsGeneral(): JSX.Element {
             }}
           />
         </Field>
+        <Field
+          label="Janela de próximos vencimentos (dias)"
+          help="Quantos dias à frente o painel financeiro mostra em 'Próx. vencimentos'."
+        >
+          <Input
+            type="number"
+            min="1"
+            value={form.dueSoonDays}
+            onChange={(e) => {
+              setForm((s) => ({ ...s, dueSoonDays: e.target.value }));
+            }}
+          />
+        </Field>
+        <Field
+          label="Guardar documentos por (dias)"
+          help="Depois disso a foto do documento do passageiro é apagada (LGPD)."
+        >
+          <Input
+            type="number"
+            min="1"
+            value={form.documentRetentionDays}
+            onChange={(e) => {
+              setForm((s) => ({ ...s, documentRetentionDays: e.target.value }));
+            }}
+          />
+        </Field>
+        <Field
+          label="E-mails extras para avisos"
+          help="Separados por vírgula. Recebem o aviso de nova solicitação, além da equipe."
+        >
+          <Input
+            value={form.notifyExtraEmails}
+            onChange={(e) => {
+              setForm((s) => ({ ...s, notifyExtraEmails: e.target.value }));
+            }}
+            placeholder="operacoes@empresa.com.br"
+          />
+        </Field>
+        <div className="flex items-center justify-between rounded-lg border border-line p-3">
+          <div>
+            <p className="text-sm font-medium">Avisar nova solicitação por e-mail</p>
+            <p className="text-xs text-sub">Quando um cliente pede um voo.</p>
+          </div>
+          <Toggle
+            checked={form.notifyOnNewRequest}
+            onChange={(v) => {
+              setForm((s) => ({ ...s, notifyOnNewRequest: v }));
+            }}
+          />
+        </div>
       </div>
       <Btn
         className="mt-4"

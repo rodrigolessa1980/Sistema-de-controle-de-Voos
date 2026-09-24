@@ -17,8 +17,11 @@ import {
   Money,
   combineDateTime,
   createTripBodySchema,
+  INACTIVE_TRIP_STATUSES,
   toISODate,
   TRIP_EXPENSE_FIELDS,
+  TRIP_STATUS_LABELS,
+  TRIP_STATUSES,
   updateTripBodySchema,
   type Aircraft,
   type AvailabilityResult,
@@ -26,6 +29,7 @@ import {
   type PricingPreview,
   type TripExpenseKey,
   type TripInternal,
+  type TripStatus,
 } from '@acm/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
@@ -79,6 +83,8 @@ interface FormState extends Record<TripExpenseKey, string> {
   distanceKm: string;
   commercialValue: string;
   notes: string;
+  /** Só o administrador vê e troca; os demais seguem o fluxo de status. */
+  status: TripStatus;
 }
 
 const blank = (): FormState => ({
@@ -98,6 +104,7 @@ const blank = (): FormState => ({
   costFees: '',
   costInternet: '',
   notes: '',
+  status: 'confirmada',
 });
 
 /** Ajuda de cada custo no formulário. */
@@ -168,6 +175,7 @@ export function TripForm({
         costFees: editing.costFees ?? '',
         costInternet: editing.costInternet ?? '',
         notes: editing.notes ?? '',
+        status: editing.status,
       });
       setPax(
         editing.pax.length > 0
@@ -212,11 +220,14 @@ export function TripForm({
   const departureTime = form.departureTime === '' ? '00:00' : form.departureTime;
   const returnTime = form.returnTime === '' ? '23:59' : form.returnTime;
 
-  const departureAt = combineDateTime(form.departureDate, departureTime);
-  const returnAt = combineDateTime(form.returnDate, returnTime);
-  const scheduleFilled = form.departureDate !== '' && form.returnDate !== '';
-  const scheduleValid =
-    scheduleFilled && new Date(returnAt).getTime() > new Date(departureAt).getTime();
+  // Data também é opcional: sem ida, vale a volta (ou hoje); sem volta, o
+  // mesmo dia da ida. Dá para salvar e acertar depois pelo "Editar".
+  const departureDate = form.departureDate || form.returnDate || toISODate(new Date());
+  const returnDate = form.returnDate || departureDate;
+
+  const departureAt = combineDateTime(departureDate, departureTime);
+  const returnAt = combineDateTime(returnDate, returnTime);
+  const scheduleValid = new Date(returnAt).getTime() > new Date(departureAt).getTime();
 
   const debouncedSchedule = useDebounced({ departureAt, returnAt, aircraftId: form.aircraftId });
 
@@ -225,6 +236,8 @@ export function TripForm({
     queryKey: ['availability-check', debouncedSchedule, editing?.id ?? null],
     enabled:
       open &&
+      // Cancelada ou recusada não ocupa a aeronave (o servidor também não confere).
+      !INACTIVE_TRIP_STATUSES.includes(form.status) &&
       debouncedSchedule.aircraftId !== '' &&
       scheduleValid &&
       debouncedSchedule.departureAt !== '',
@@ -252,13 +265,14 @@ export function TripForm({
   const selectedClient = clients.data?.items.find((c) => c.id === form.clientId);
   const hasDebt = selectedClient !== undefined && selectedClient.financialStatus !== 'em_dia';
 
-  const conflict = availability.data !== undefined && !availability.data.available;
-  const canSubmit =
-    form.clientId !== '' &&
-    form.aircraftId !== '' &&
-    scheduleValid &&
-    !conflict &&
-    !pax.some((p) => p.uploading);
+  const conflict =
+    !INACTIVE_TRIP_STATUSES.includes(form.status) &&
+    availability.data !== undefined &&
+    !availability.data.available;
+  // Nenhum campo é obrigatório: só não salva com conflito de agenda, datas
+  // invertidas ou foto de documento ainda subindo.
+  const canSubmit = scheduleValid && !conflict && !pax.some((p) => p.uploading);
+  const isAdmin = role === 'admin';
 
   const save = useMutation({
     // Recebe o corpo JÁ validado pelo contrato — o `submit` abaixo garante isso.
@@ -294,8 +308,8 @@ export function TripForm({
    * `errors`, campo a campo.
    */
   const buildBody = (acknowledgeDebt: boolean): Record<string, unknown> | null => {
-    const departureIso = toIsoDateTime(form.departureDate, departureTime);
-    const returnIso = toIsoDateTime(form.returnDate, returnTime);
+    const departureIso = toIsoDateTime(departureDate, departureTime);
+    const returnIso = toIsoDateTime(returnDate, returnTime);
 
     if (departureIso === null || returnIso === null) {
       setErrors({ departureAt: 'Informe as datas de ida e volta.' });
@@ -303,10 +317,12 @@ export function TripForm({
     }
 
     const raw = {
-      clientId: form.clientId,
-      aircraftId: form.aircraftId,
-      origin: optionalText(form.origin),
-      destination: optionalText(form.destination),
+      // Cliente em branco: o servidor usa o cadastro "Cliente a definir".
+      clientId: optionalText(form.clientId),
+      aircraftId: form.aircraftId === '' ? null : form.aircraftId,
+      // String vazia vira "A definir" no contrato, inclusive ao apagar na edição.
+      origin: form.origin.trim(),
+      destination: form.destination.trim(),
       departureAt: departureIso,
       returnAt: returnIso,
       distanceKm: form.distanceKm === '' ? null : Number(form.distanceKm),
@@ -314,8 +330,10 @@ export function TripForm({
       ...Object.fromEntries(
         TRIP_EXPENSE_FIELDS.map(({ key }) => [key, form[key] === '' ? null : form[key]]),
       ),
-      notes: optionalText(form.notes),
+      // Na edição, apagar a observação precisa chegar ao servidor como "".
+      notes: editing ? form.notes : optionalText(form.notes),
       pax: toPassengerBody(pax),
+      ...(editing && isAdmin ? { status: form.status } : {}),
       ...(editing ? {} : { requestId: prefill?.requestId ?? null, acknowledgeDebt }),
     };
 
@@ -382,7 +400,7 @@ export function TripForm({
       onClose={onClose}
       size="max-w-2xl"
       title={editing ? 'Editar viagem' : 'Nova viagem'}
-      desc="O Operacional agenda direto. A aeronave e a tarifa são visíveis somente para o Operacional."
+      desc="Nenhum campo é obrigatório — salve o que tiver e complete depois pelo Editar. Aeronave e tarifa são visíveis somente para a equipe interna."
       footer={
         <>
           <Btn variant="outline" onClick={onClose} disabled={save.isPending}>
@@ -399,8 +417,7 @@ export function TripForm({
         <div className="sm:col-span-2">
           <Field
             label="Cliente"
-            required
-            help="Para quem é esta viagem."
+            help="Para quem é esta viagem. Em branco, fica como 'Cliente a definir'."
             error={errorOf('clientId')}
           >
             <Select
@@ -409,7 +426,7 @@ export function TripForm({
                 set('clientId', e.target.value);
               }}
             >
-              <option value="">Selecione o cliente</option>
+              <option value="">A definir (escolher depois)</option>
               {(clients.data?.items ?? []).map((client) => (
                 <option key={client.id} value={client.id}>
                   {client.name}
@@ -469,7 +486,11 @@ export function TripForm({
           />
         </Field>
 
-        <Field label="Data da ida" required help="Dia do embarque." error={errorOf('departureAt')}>
+        <Field
+          label="Data da ida"
+          help="Dia do embarque. Em branco, usa a data da volta ou hoje."
+          error={errorOf('departureAt')}
+        >
           <Input
             type="date"
             min={minDate}
@@ -490,7 +511,11 @@ export function TripForm({
           />
         </Field>
 
-        <Field label="Data da volta" required help="Dia do retorno." error={errorOf('returnAt')}>
+        <Field
+          label="Data da volta"
+          help="Dia do retorno. Em branco, o mesmo dia da ida."
+          error={errorOf('returnAt')}
+        >
           <Input
             type="date"
             min={form.departureDate === '' ? minDate : form.departureDate}
@@ -513,8 +538,7 @@ export function TripForm({
 
         <Field
           label="Aeronave"
-          required
-          help="Só o Operacional vê a aeronave."
+          help="Só a equipe interna vê a aeronave. Em branco, a viagem fica sem aeronave."
           error={errorOf('aircraftId')}
         >
           <Select
@@ -523,7 +547,7 @@ export function TripForm({
               set('aircraftId', e.target.value);
             }}
           >
-            <option value="">Selecione a aeronave</option>
+            <option value="">Sem aeronave (definir depois)</option>
             {(aircraft.data?.items ?? []).map((item) => (
               <option key={item.id} value={item.id}>
                 {item.prefix} · {KIND_LABELS[item.kind]} · {item.model}
@@ -653,25 +677,52 @@ export function TripForm({
                 </div>
               ))}
             </div>
-
-            <div className="mt-3">
-              <Field
-                label="Valor comercial"
-                help="Valor final cobrado. Pode ser ajustado."
-                error={errorOf('commercialValue')}
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={form.commercialValue}
-                  onChange={(e) => {
-                    set('commercialValue', e.target.value);
-                  }}
-                  placeholder={estimated}
-                />
-              </Field>
-            </div>
           </div>
+        )}
+
+        {/* Fora do painel de tarifa: sem tarifa cadastrada, o campo sumia da tela. */}
+        <Field
+          label="Valor comercial (R$)"
+          help={
+            tariffData !== null
+              ? 'Valor final cobrado. Em branco, usa o valor estimado pela tarifa.'
+              : 'Valor final cobrado do cliente.'
+          }
+          error={errorOf('commercialValue')}
+        >
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.commercialValue}
+            onChange={(e) => {
+              set('commercialValue', e.target.value);
+            }}
+            placeholder={tariffData !== null ? estimated : '0,00'}
+          />
+        </Field>
+
+        {editing && isAdmin ? (
+          <Field
+            label="Status da viagem"
+            help="Só o administrador troca direto — inclusive para reabrir uma viagem concluída ou cancelada."
+            error={errorOf('status')}
+          >
+            <Select
+              value={form.status}
+              onChange={(e) => {
+                set('status', e.target.value as TripStatus);
+              }}
+            >
+              {TRIP_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {TRIP_STATUS_LABELS[s]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : (
+          <div className="hidden sm:block" />
         )}
 
         {/* ---- custos da viagem: todos opcionais, alimentam o Financeiro ---- */}

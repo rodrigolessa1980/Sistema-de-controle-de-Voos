@@ -12,21 +12,25 @@
 
 import {
   chargeSchema,
+  chargeStatus,
   createChargeBodySchema,
   idParamSchema,
   listChargeQuerySchema,
   paginated,
+  updateChargeBodySchema,
   type Charge,
 } from '@acm/shared';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
-import { refreshClientAggregates } from '../lib/aggregates';
+import { env } from '../env';
+import { recalculateCharge, refreshClientAggregates } from '../lib/aggregates';
 import { recordChanges } from '../lib/changefeed';
 import { nextCode } from '../lib/codes';
 import { badRequest, notFound } from '../lib/errors';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
-import { decimalToMoneyStrict, Prisma, prisma, toDecimal } from '../lib/prisma';
+import { resolveClientId } from '../lib/placeholder-client';
+import { decimalToMoneyStrict, Prisma, prisma, toDecimal, type Db } from '../lib/prisma';
 import { clientScope, requireAnyPermission, requirePermission, requireUser } from '../plugins/rbac';
 
 export const chargeSelect = {
@@ -64,6 +68,36 @@ export const chargeSelect = {
 type ChargeRow = Prisma.ChargeGetPayload<{ select: typeof chargeSelect }>;
 
 const utcDate = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** "AAAA-MM-DD" → Date à meia-noite UTC; em branco, hoje no fuso da empresa. */
+const dueDateOrToday = (value: string | undefined): Date =>
+  new Date(
+    `${value ?? new Date().toLocaleDateString('en-CA', { timeZone: env.TZ })}T00:00:00.000Z`,
+  );
+
+/**
+ * Recalcula pago/saldo/status depois de mexer no total ou nos pagamentos.
+ *
+ * `recalculateCharge` reconta os pagamentos; o `vencido` depende do relógio e
+ * normalmente fica com o job, mas depois de uma edição a tela tem de mostrar o
+ * status certo na hora — não daqui a cinco minutos.
+ */
+export async function reconcileCharge(tx: Db, chargeId: string, now: Date): Promise<void> {
+  await recalculateCharge(tx, chargeId);
+
+  const row = await tx.charge.findUniqueOrThrow({
+    where: { id: chargeId },
+    select: { total: true, paidAmount: true, dueDate: true, status: true },
+  });
+
+  const status = chargeStatus(
+    { total: row.total.toFixed(2), paidAmount: row.paidAmount.toFixed(2), dueDate: row.dueDate },
+    now,
+  );
+  if (status !== row.status) {
+    await tx.charge.update({ where: { id: chargeId }, data: { status } });
+  }
+}
 
 export function toChargeDTO(row: ChargeRow): Charge {
   return {
@@ -161,23 +195,27 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
       const body = request.body;
       const now = new Date();
 
+      // Valor em branco = R$ 0: o administrador lança a cobrança e completa depois.
       const total = toDecimal(body.total);
-      if (total.lessThanOrEqualTo(0))
-        throw badRequest('O valor da cobrança deve ser maior que zero.');
+      const dueDate = dueDateOrToday(body.dueDate);
 
       const created = await prisma.$transaction(async (tx) => {
+        // Sem cliente: vale o da viagem escolhida; sem viagem, "Cliente a definir".
+        const trip = body.tripId
+          ? await tx.trip.findUnique({ where: { id: body.tripId }, select: { clientId: true } })
+          : null;
+        if (body.tripId && !trip) throw notFound('Viagem');
+
+        const clientId = await resolveClientId(tx, body.clientId ?? trip?.clientId);
+
         const client = await tx.client.findFirst({
-          where: { id: body.clientId, deletedAt: null },
+          where: { id: clientId, deletedAt: null },
           select: { id: true },
         });
         if (!client) throw notFound('Cliente');
 
-        if (body.tripId) {
-          const trip = await tx.trip.findFirst({
-            where: { id: body.tripId, clientId: body.clientId },
-            select: { id: true },
-          });
-          if (!trip) throw badRequest('A viagem informada não pertence a este cliente.');
+        if (trip && trip.clientId !== clientId) {
+          throw badRequest('A viagem informada não pertence a este cliente.');
         }
 
         const code = await nextCode(tx, 'charge');
@@ -185,24 +223,24 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
         const charge = await tx.charge.create({
           data: {
             code,
-            clientId: body.clientId,
+            clientId,
             tripId: body.tripId ?? null,
             total,
             // Cobrança nasce sem pagamento: saldo = total.
             paidAmount: new Prisma.Decimal(0),
             balance: total,
             status: 'pendente',
-            dueDate: new Date(`${body.dueDate}T00:00:00.000Z`),
+            dueDate,
             description: body.description ?? null,
             createdById: user.id,
           },
           select: { id: true },
         });
 
-        await refreshClientAggregates(tx, body.clientId, now);
+        await refreshClientAggregates(tx, clientId, now);
 
         const portalUser = await tx.user.findFirst({
-          where: { clientId: body.clientId, status: 'ativo' },
+          where: { clientId, status: 'ativo' },
           select: { id: true },
         });
         if (portalUser) {
@@ -211,7 +249,7 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
               userId: portalUser.id,
               type: 'cobranca_criada',
               title: `Nova cobrança ${code}`,
-              body: `Vencimento em ${body.dueDate}`,
+              body: `Vencimento em ${utcDate(dueDate)}`,
               entity: 'charge',
               entityId: charge.id,
             },
@@ -225,13 +263,13 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
               entity: 'charge',
               entityId: charge.id,
               action: 'created',
-              clientScopeId: body.clientId,
+              clientScopeId: clientId,
             },
             {
               entity: 'client',
-              entityId: body.clientId,
+              entityId: clientId,
               action: 'updated',
-              clientScopeId: body.clientId,
+              clientScopeId: clientId,
             },
           ],
           user.id,
@@ -243,7 +281,7 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
             action: 'charge.create',
             entity: 'charge',
             entityId: charge.id,
-            after: { code, total: body.total, dueDate: body.dueDate },
+            after: { code, total: body.total, dueDate: utcDate(dueDate) },
           },
         });
 
@@ -252,6 +290,128 @@ export async function chargeRoutes(app: FastifyInstance): Promise<void> {
 
       void reply.status(201);
       return toChargeDTO(created);
+    },
+  );
+
+  // ---------------------------------------------------------------- atualizar
+  route.patch(
+    '/:id',
+    {
+      preValidation: requirePermission('charge:update'),
+      schema: {
+        params: idParamSchema,
+        body: updateChargeBodySchema,
+        response: { 200: chargeSchema },
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = request.params;
+      const body = request.body;
+      const now = new Date();
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const before = await tx.charge.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            code: true,
+            clientId: true,
+            tripId: true,
+            total: true,
+            paidAmount: true,
+            dueDate: true,
+          },
+        });
+        if (!before) throw notFound('Cobrança');
+
+        // `null` desliga a viagem; ausente mantém a atual.
+        const tripId = body.tripId === undefined ? before.tripId : body.tripId;
+        const trip = tripId
+          ? await tx.trip.findUnique({ where: { id: tripId }, select: { clientId: true } })
+          : null;
+        if (tripId && !trip) throw notFound('Viagem');
+
+        // Trocar só a viagem leva junto o cliente dela.
+        const clientId = body.clientId ?? (body.tripId && trip ? trip.clientId : before.clientId);
+
+        if (clientId !== before.clientId) {
+          const client = await tx.client.findFirst({
+            where: { id: clientId, deletedAt: null },
+            select: { id: true },
+          });
+          if (!client) throw notFound('Cliente');
+        }
+        if (trip && trip.clientId !== clientId) {
+          throw badRequest('A viagem informada não pertence a este cliente.');
+        }
+
+        const total = body.total === undefined ? before.total : toDecimal(body.total);
+        if (total.lessThan(before.paidAmount)) {
+          throw badRequest(
+            `O valor não pode ficar abaixo do que já foi pago (${decimalToMoneyStrict(before.paidAmount)}). Edite ou estorne um pagamento antes.`,
+            { total: 'Menor que o valor já pago' },
+          );
+        }
+
+        await tx.charge.update({
+          where: { id },
+          data: {
+            clientId,
+            tripId,
+            total,
+            ...(body.dueDate === undefined ? {} : { dueDate: dueDateOrToday(body.dueDate) }),
+            ...(body.description === undefined ? {} : { description: body.description }),
+          },
+        });
+
+        await reconcileCharge(tx, id, now);
+
+        const touchedClients =
+          clientId === before.clientId ? [clientId] : [before.clientId, clientId];
+        for (const touched of touchedClients) {
+          await refreshClientAggregates(tx, touched, now);
+        }
+
+        await recordChanges(
+          tx,
+          [
+            { entity: 'charge', entityId: id, action: 'updated', clientScopeId: clientId },
+            ...touchedClients.map((touched) => ({
+              entity: 'client' as const,
+              entityId: touched,
+              action: 'updated' as const,
+              clientScopeId: touched,
+            })),
+          ],
+          user.id,
+        );
+
+        await tx.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'charge.update',
+            entity: 'charge',
+            entityId: id,
+            before: {
+              clientId: before.clientId,
+              tripId: before.tripId,
+              total: decimalToMoneyStrict(before.total),
+              dueDate: utcDate(before.dueDate),
+            },
+            after: {
+              clientId,
+              tripId,
+              total: decimalToMoneyStrict(total),
+              fields: Object.keys(body),
+            },
+          },
+        });
+
+        return tx.charge.findUniqueOrThrow({ where: { id }, select: chargeSelect });
+      });
+
+      return toChargeDTO(updated);
     },
   );
 }

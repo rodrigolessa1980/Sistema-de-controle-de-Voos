@@ -865,9 +865,10 @@ describe('cobranças e pagamentos', () => {
     expect(body.status).toBe('pendente');
   });
 
-  it('recusa valor zero', async () => {
+  it('aceita valor zero (lançar agora, completar depois)', async () => {
     const response = await post(fin, '/api/charges', novaCobranca({ total: '0' }));
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ total: '0.00', balance: '0.00', status: 'pendente' });
   });
 
   it('recusa viagem de outro cliente', async () => {
@@ -1352,5 +1353,166 @@ describe('configurações', () => {
   it('recusa margem negativa', async () => {
     const response = await patch(op, '/api/settings', { marginMinutes: -10 });
     expect(response.statusCode).toBe(422);
+  });
+});
+
+// ============================================================================
+//  EDIÇÃO E CAMPOS OPCIONAIS
+// ============================================================================
+
+describe('tudo editável, nada obrigatório', () => {
+  let admin: TestUser;
+
+  beforeAll(async () => {
+    admin = await createUser(app, 'admin');
+  });
+
+  const concluida = async () => {
+    const aircraft = await makeAircraft({ cruiseSpeed: 800 });
+    const criada = await post(op, '/api/trips', {
+      clientId,
+      aircraftId: aircraft.id,
+      ...futureWindow(40),
+    });
+    expect(criada.statusCode).toBe(201);
+    const id = criada.json<{ id: string }>().id;
+    expect((await post(op, `/api/trips/${id}/complete`)).statusCode).toBe(200);
+    return id;
+  };
+
+  it('viagem sem nenhum campo nasce com "Cliente a definir" e sem aeronave', async () => {
+    const response = await post(admin, '/api/trips', {});
+    expect(response.statusCode).toBe(201);
+
+    const body = response.json();
+    expect(body.client.name).toBe('Cliente a definir');
+    expect(body.aircraftId).toBeNull();
+    expect(body.origin).toBe('A definir');
+    expect(new Date(body.returnAt).getTime()).toBeGreaterThan(new Date(body.departureAt).getTime());
+
+    // O segundo registro sem cliente reaproveita o mesmo cadastro.
+    const segunda = await post(admin, '/api/trips', {});
+    expect(segunda.json().clientId).toBe(body.clientId);
+  });
+
+  it('o admin edita viagem concluída e troca o status; o operacional não', async () => {
+    const id = await concluida();
+
+    const operacional = await patch(op, `/api/trips/${id}`, { notes: 'x' });
+    expect(operacional.statusCode).toBe(409);
+
+    const status = await patch(op, `/api/trips/${id}`, { status: 'confirmada' });
+    expect(status.statusCode).toBe(403);
+
+    const response = await patch(admin, `/api/trips/${id}`, {
+      notes: 'Corrigido pelo admin',
+      status: 'confirmada',
+      costFuel: '1500.00',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      notes: 'Corrigido pelo admin',
+      status: 'confirmada',
+      costFuel: '1500.00',
+    });
+  });
+
+  it('o admin tira a aeronave da viagem', async () => {
+    const aircraft = await makeAircraft({ cruiseSpeed: 800 });
+    const criada = await post(op, '/api/trips', {
+      clientId,
+      aircraftId: aircraft.id,
+      ...futureWindow(45),
+      commercialValue: '5000.00',
+    });
+    const id = criada.json<{ id: string }>().id;
+
+    const response = await patch(admin, `/api/trips/${id}`, { aircraftId: null });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().aircraftId).toBeNull();
+    // Valor comercial não enviado continua o gravado.
+    expect(response.json().commercialValue).toBe('5000.00');
+  });
+
+  it('cobrança sem nenhum campo nasce com R$ 0 e não deixa ninguém vencido', async () => {
+    const response = await post(admin, '/api/charges', {});
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ total: '0.00', status: 'pendente' });
+    expect(response.json().client.name).toBe('Cliente a definir');
+  });
+
+  it('edita valor e vencimento da cobrança, recalculando saldo e status', async () => {
+    const criada = await post(fin, '/api/charges', {
+      clientId,
+      total: '10000.00',
+      dueDate: '2027-01-15',
+    });
+    const id = criada.json<{ id: string }>().id;
+    await post(fin, `/api/charges/${id}/payments`, { amount: '4000.00', method: 'pix' });
+
+    const response = await patch(admin, `/api/charges/${id}`, {
+      total: '8000.00',
+      dueDate: '2020-01-01',
+      description: 'Ajustado',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      total: '8000.00',
+      balance: '4000.00',
+      status: 'vencido',
+      description: 'Ajustado',
+    });
+
+    const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId } });
+    expect(client.financialStatus).toBe('vencido');
+
+    const abaixo = await patch(admin, `/api/charges/${id}`, { total: '1000.00' });
+    expect(abaixo.statusCode).toBe(400);
+  });
+
+  it('edita um pagamento e respeita o saldo da cobrança', async () => {
+    const criada = await post(fin, '/api/charges', {
+      clientId,
+      total: '10000.00',
+      dueDate: '2027-01-15',
+    });
+    const id = criada.json<{ id: string }>().id;
+    const paga = await post(fin, `/api/charges/${id}/payments`, {
+      amount: '4000.00',
+      method: 'pix',
+    });
+    const paymentId = paga.json<{ payments: { id: string }[] }>().payments[0]?.id ?? '';
+
+    const response = await patch(admin, `/api/payments/${paymentId}`, {
+      amount: '10000.00',
+      method: 'boleto',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ balance: '0.00', status: 'pago' });
+
+    const acima = await patch(admin, `/api/payments/${paymentId}`, { amount: '10000.01' });
+    expect(acima.statusCode).toBe(400);
+
+    const operacional = await patch(op, `/api/payments/${paymentId}`, { amount: '1.00' });
+    expect(operacional.statusCode).toBe(403);
+  });
+
+  it('a equipe interna edita a solicitação do cliente', async () => {
+    const criada = await post(cli, '/api/requests', {
+      origin: 'Curitiba',
+      destination: 'Florianópolis',
+      ...futureWindow(50),
+    });
+    expect(criada.statusCode).toBe(201);
+    const id = criada.json<{ id: string }>().id;
+
+    const response = await patch(op, `/api/requests/${id}`, { destination: 'Joinville' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().destination).toBe('Joinville');
+
+    // Status direto é só do administrador.
+    expect((await patch(op, `/api/requests/${id}`, { status: 'em_analise' })).statusCode).toBe(403);
+    const status = await patch(admin, `/api/requests/${id}`, { status: 'em_analise' });
+    expect(status.json().status).toBe('em_analise');
   });
 });

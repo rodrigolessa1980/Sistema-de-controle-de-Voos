@@ -87,6 +87,12 @@ describe('chargeStatus — regra `chStatus` do protótipo', () => {
     expect(chargeStatus(charge, NOW)).toBe('pendente');
   });
 
+  it('cobrança de valor zero vencida não vira "vencido" nem suja o cliente', () => {
+    const charge = { total: '0', paidAmount: '0', dueDate: due('2026-01-01') };
+    expect(chargeStatus(charge, NOW)).toBe('pendente');
+    expect(clientFinancialStatus([charge], NOW)).toBe('em_dia');
+  });
+
   it('só vence DEPOIS do último instante do dia', () => {
     const dueDate = due('2026-08-11');
     expect(isChargeOverdue(dueDate, new Date('2026-08-11T23:59:59.000Z'))).toBe(false);

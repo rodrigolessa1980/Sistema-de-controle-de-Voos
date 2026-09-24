@@ -50,7 +50,9 @@ export function chargeStatus(charge: ChargeAmounts, now: Date): ChargeStatus {
 
   if (paidCents >= totalCents && totalCents > 0) return 'pago';
 
-  const overdue = isChargeOverdue(charge.dueDate, now);
+  // Sem saldo não há atraso: uma cobrança de R$ 0 (lançada para completar
+  // depois) não pode deixar o cliente "vencido".
+  const overdue = paidCents < totalCents && isChargeOverdue(charge.dueDate, now);
   if (paidCents > 0) return overdue ? 'vencido' : 'parcial';
   return overdue ? 'vencido' : 'pendente';
 }

@@ -53,10 +53,12 @@ export const PERMISSIONS = {
   'charge:read': 'Ver todas as cobranças',
   'charge:read_own': 'Ver as próprias cobranças',
   'charge:create': 'Criar cobrança',
+  'charge:update': 'Editar cobrança',
 
   // ---- pagamentos (o operacional NÃO tem nenhuma destas) ----
   'payment:read': 'Ver pagamentos',
   'payment:create': 'Registrar pagamento',
+  'payment:update': 'Editar pagamento',
   'payment:settle': 'Dar baixa em cobrança',
   'payment:reverse': 'Estornar pagamento',
 
@@ -147,8 +149,10 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Permission[]> = {
     'trip:read',
     'charge:read',
     'charge:create',
+    'charge:update',
     'payment:read',
     'payment:create',
+    'payment:update',
     'payment:settle',
     'payment:reverse',
     'dashboard:financeiro',
@@ -389,6 +393,20 @@ export const NAV: Record<RoleKey, readonly NavItem[]> = {
       icon: 'Wallet',
       hint: 'Valores a receber',
       permission: 'charge:read',
+    },
+    {
+      label: 'Cobranças',
+      path: '/financeiro/cobrancas',
+      icon: 'ReceiptText',
+      hint: 'Criar e editar cobranças',
+      permission: 'charge:create',
+    },
+    {
+      label: 'Pagamentos',
+      path: '/financeiro/pagamentos',
+      icon: 'Banknote',
+      hint: 'Registrar e editar pagamentos',
+      permission: 'payment:read',
     },
     {
       label: 'Relatórios',

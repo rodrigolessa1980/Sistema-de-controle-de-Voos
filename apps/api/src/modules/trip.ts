@@ -21,6 +21,7 @@ import {
   checkConflict,
   createTripBodySchema,
   idParamSchema,
+  INACTIVE_TRIP_STATUSES,
   listTripQuerySchema,
   LOCKED_TRIP_STATUSES,
   okSchema,
@@ -44,6 +45,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { refreshClientAggregates } from '../lib/aggregates';
 import { recordChanges } from '../lib/changefeed';
 import { nextCode } from '../lib/codes';
+import { resolveClientId } from '../lib/placeholder-client';
 import { badRequest, conflict, forbidden, notFound, unprocessable } from '../lib/errors';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
 import { decimalToMoney, Prisma, prisma, toDecimal, toDecimalOrNull, type Db } from '../lib/prisma';
@@ -454,8 +456,16 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
       const body = request.body;
       const now = new Date();
 
-      const departureAt = new Date(body.departureAt);
-      const returnAt = new Date(body.returnAt);
+      // Datas em branco: ida agora, volta uma hora depois. O formulário já manda
+      // as duas preenchidas; isto é a rede para quem chama a API direto.
+      const departureAt = body.departureAt
+        ? new Date(body.departureAt)
+        : body.returnAt
+          ? new Date(new Date(body.returnAt).getTime() - 3_600_000)
+          : now;
+      const returnAt = body.returnAt
+        ? new Date(body.returnAt)
+        : new Date(departureAt.getTime() + 3_600_000);
 
       // Mesmas validações do formulário, agora com o servidor como autoridade.
       // Passageiros são opcionais: só a janela de datas é validada.
@@ -480,30 +490,40 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
       // FK barra do mesmo jeito.
       //
       // A verificação de CONFLITO continua dentro — essa sim precisa.
+      // Sem cliente: fica no cadastro "Cliente a definir" até alguém editar.
+      const clientId = await resolveClientId(prisma, body.clientId);
+      const aircraftId = body.aircraftId ?? null;
+
       const [client, aircraft, settings] = await Promise.all([
         prisma.client.findFirst({
-          where: { id: body.clientId, deletedAt: null },
+          where: { id: clientId, deletedAt: null },
           select: { id: true, name: true, financialStatus: true, openBalance: true },
         }),
-        prisma.aircraft.findFirst({
-          where: { id: body.aircraftId, deletedAt: null },
-          select: { id: true, prefix: true, cruiseSpeed: true },
-        }),
+        aircraftId === null
+          ? null
+          : prisma.aircraft.findFirst({
+              where: { id: aircraftId, deletedAt: null },
+              select: { id: true, prefix: true, cruiseSpeed: true },
+            }),
         getSettings(),
       ]);
 
       if (!client) throw notFound('Cliente');
-      if (!aircraft) throw notFound('Aeronave');
+      if (aircraftId !== null && !aircraft) throw notFound('Aeronave');
 
       const createdId = await prisma.$transaction(async (tx) => {
         // Conflito verificado DENTRO da transação: é o que impede duas
-        // requisições simultâneas de criarem voos sobrepostos.
-        const clash = await evaluateConflict(tx, {
-          aircraftId: body.aircraftId,
-          start: departureAt,
-          end: returnAt,
-          marginMinutes: settings.marginMinutes,
-        });
+        // requisições simultâneas de criarem voos sobrepostos. Sem aeronave
+        // não há agenda a conferir.
+        const clash =
+          aircraftId === null
+            ? ({ conflict: false } as const)
+            : await evaluateConflict(tx, {
+                aircraftId,
+                start: departureAt,
+                end: returnAt,
+                marginMinutes: settings.marginMinutes,
+              });
 
         if (clash.conflict) {
           throw conflict(
@@ -524,21 +544,30 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
           );
         }
 
-        const pricing = await buildPricing(tx, {
-          aircraftId: body.aircraftId,
-          distanceKm: body.distanceKm ?? null,
-          cruiseSpeed: aircraft.cruiseSpeed,
-          commercialValue: body.commercialValue ?? null,
-          reference: departureAt,
-        });
+        const pricing: PricingSnapshot =
+          aircraft === null
+            ? {
+                tariffId: null,
+                internalTariff: null,
+                flightHours: null,
+                estimatedValue: null,
+                commercialValue: toDecimalOrNull(body.commercialValue ?? null),
+              }
+            : await buildPricing(tx, {
+                aircraftId: aircraft.id,
+                distanceKm: body.distanceKm ?? null,
+                cruiseSpeed: aircraft.cruiseSpeed,
+                commercialValue: body.commercialValue ?? null,
+                reference: departureAt,
+              });
 
         const code = await nextCode(tx, 'trip');
 
         const trip = await tx.trip.create({
           data: {
             code,
-            clientId: body.clientId,
-            aircraftId: body.aircraftId,
+            clientId,
+            aircraftId,
             origin: body.origin,
             destination: body.destination,
             departureAt,
@@ -605,7 +634,7 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
         }
 
         // O `tripCount` do cliente é denormalizado — atualiza junto.
-        await refreshClientAggregates(tx, body.clientId, now);
+        await refreshClientAggregates(tx, clientId, now);
 
         await recordChanges(
           tx,
@@ -614,13 +643,13 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
               entity: 'trip',
               entityId: trip.id,
               action: 'created',
-              clientScopeId: body.clientId,
+              clientScopeId: clientId,
             },
             {
               entity: 'client',
-              entityId: body.clientId,
+              entityId: clientId,
               action: 'updated',
-              clientScopeId: body.clientId,
+              clientScopeId: clientId,
             },
             ...(body.requestId
               ? ([
@@ -628,7 +657,7 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
                     entity: 'request' as const,
                     entityId: body.requestId,
                     action: 'updated' as const,
-                    clientScopeId: body.clientId,
+                    clientScopeId: clientId,
                   },
                 ] as const)
               : []),
@@ -644,8 +673,8 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
             entityId: trip.id,
             after: {
               code,
-              clientId: body.clientId,
-              aircraftId: body.aircraftId,
+              clientId,
+              aircraftId,
               scheduledWithDebt: hasDebt,
             },
           },
@@ -682,6 +711,13 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
       const { id } = request.params;
       const body = request.body;
       const now = new Date();
+      // O administrador corrige qualquer viagem — inclusive concluída ou
+      // cancelada — e troca o status direto. Os demais seguem o fluxo normal.
+      const isAdmin = user.role === 'admin';
+
+      if (body.status !== undefined && !isAdmin) {
+        throw forbidden('Só o administrador altera o status da viagem direto.');
+      }
 
       const updated = await prisma.$transaction(async (tx) => {
         const before = await tx.trip.findUnique({
@@ -695,17 +731,29 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
             returnAt: true,
             status: true,
             distanceKm: true,
+            commercialValue: true,
           },
         });
         if (!before) throw notFound('Viagem');
 
-        if (LOCKED_TRIP_STATUSES.includes(before.status)) {
+        if (!isAdmin && LOCKED_TRIP_STATUSES.includes(before.status)) {
           throw conflict(`Viagem ${before.status} não pode ser editada.`);
+        }
+
+        if (body.clientId !== undefined && body.clientId !== before.clientId) {
+          const client = await tx.client.findFirst({
+            where: { id: body.clientId, deletedAt: null },
+            select: { id: true },
+          });
+          if (!client) throw notFound('Cliente');
         }
 
         const departureAt = body.departureAt ? new Date(body.departureAt) : before.departureAt;
         const returnAt = body.returnAt ? new Date(body.returnAt) : before.returnAt;
-        const aircraftId = body.aircraftId ?? before.aircraftId;
+        // `null` tira a aeronave; ausente mantém a atual.
+        const aircraftId = body.aircraftId === undefined ? before.aircraftId : body.aircraftId;
+        const status = body.status ?? before.status;
+        const clientId = body.clientId ?? before.clientId;
 
         // Editar permite data no passado (corrigir um registro antigo).
         const problems = validateScheduleWindow({
@@ -720,7 +768,8 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
 
         const settings = await getSettings(tx);
 
-        if (aircraftId !== null) {
+        // Viagem cancelada ou recusada não ocupa a aeronave: não há o que conferir.
+        if (aircraftId !== null && !INACTIVE_TRIP_STATUSES.includes(status)) {
           const clash = await evaluateConflict(tx, {
             aircraftId,
             start: departureAt,
@@ -743,8 +792,22 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
           body.commercialValue !== undefined ||
           body.departureAt !== undefined;
 
+        // Valor comercial ausente no corpo = mantém o gravado, não recalcula.
+        const commercialValue =
+          body.commercialValue === undefined
+            ? decimalToMoney(before.commercialValue)
+            : body.commercialValue;
+
         let pricing: PricingSnapshot | null = null;
-        if (needsRepricing && aircraftId !== null) {
+        if (needsRepricing && aircraftId === null) {
+          pricing = {
+            tariffId: null,
+            internalTariff: null,
+            flightHours: null,
+            estimatedValue: null,
+            commercialValue: toDecimalOrNull(commercialValue),
+          };
+        } else if (needsRepricing && aircraftId !== null) {
           const aircraft = await tx.aircraft.findFirst({
             where: { id: aircraftId, deletedAt: null },
             select: { cruiseSpeed: true },
@@ -758,16 +821,29 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
                 ? (before.distanceKm?.toNumber() ?? null)
                 : (body.distanceKm ?? null),
             cruiseSpeed: aircraft.cruiseSpeed,
-            commercialValue: body.commercialValue ?? null,
+            commercialValue,
             reference: departureAt,
           });
         }
 
         if (body.pax) {
+          await assertDocumentsExist(tx, body.pax);
           // Substitui a lista inteira: o formulário sempre manda o estado final.
           await tx.passenger.deleteMany({ where: { tripId: id } });
           await createPassengers(tx, body.pax, { tripId: id });
         }
+
+        // Datas de conclusão e cancelamento acompanham o status escolhido.
+        const statusChanged = status !== before.status;
+        const statusData = !statusChanged
+          ? {}
+          : {
+              status,
+              ...(status === 'cancelada'
+                ? { canceledAt: now, canceledById: user.id }
+                : { canceledAt: null, canceledById: null, cancelReason: null }),
+              ...(status === 'concluida' ? { completedAt: now } : { completedAt: null }),
+            };
 
         await tx.trip.update({
           where: { id },
@@ -784,6 +860,7 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
             ...(body.notes === undefined ? {} : { notes: body.notes }),
             ...(body.pax === undefined ? {} : { passengers: body.pax.length }),
             ...expenseData(body),
+            ...statusData,
             ...(pricing === null
               ? {}
               : {
@@ -796,15 +873,28 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
           },
         });
 
-        // Trocar de cliente move a contagem de viagens dos dois lados.
-        if (body.clientId !== undefined && body.clientId !== before.clientId) {
-          await refreshClientAggregates(tx, before.clientId, now);
-          await refreshClientAggregates(tx, body.clientId, now);
+        // Trocar de cliente ou de status mexe na contagem de viagens do cliente.
+        const touchedClients =
+          clientId !== before.clientId
+            ? [before.clientId, clientId]
+            : statusChanged
+              ? [clientId]
+              : [];
+        for (const touched of touchedClients) {
+          await refreshClientAggregates(tx, touched, now);
         }
 
         await recordChanges(
           tx,
-          [{ entity: 'trip', entityId: id, action: 'updated', clientScopeId: before.clientId }],
+          [
+            { entity: 'trip', entityId: id, action: 'updated', clientScopeId: clientId },
+            ...touchedClients.map((touched) => ({
+              entity: 'client' as const,
+              entityId: touched,
+              action: 'updated' as const,
+              clientScopeId: touched,
+            })),
+          ],
           user.id,
         );
 
@@ -814,7 +904,8 @@ export async function tripRoutes(app: FastifyInstance): Promise<void> {
             action: 'trip.update',
             entity: 'trip',
             entityId: id,
-            before: { code: before.code, status: before.status },
+            before: { code: before.code, status: before.status, clientId: before.clientId },
+            after: { status, clientId, fields: Object.keys(body) },
           },
         });
 

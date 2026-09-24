@@ -525,14 +525,21 @@ export type TripInternal = z.infer<typeof tripInternalSchema>;
 export const tripClientSchema = tripBaseSchema;
 export type TripClient = z.infer<typeof tripClientSchema>;
 
+/**
+ * Nenhum campo é obrigatório. Em branco, o servidor completa:
+ *   - cliente → o cadastro "Cliente a definir" (a coluna é obrigatória no banco);
+ *   - aeronave → fica sem aeronave, sem checagem de agenda nem cálculo de tarifa;
+ *   - datas → ida agora, volta uma hora depois da ida.
+ * Tudo pode ser corrigido depois pelo "Editar".
+ */
 export const createTripBodySchema = z.object({
-  clientId: idSchema,
-  aircraftId: idSchema,
+  clientId: idSchema.optional(),
+  aircraftId: idSchema.nullish(),
   /** Opcionais: em branco, grava "A definir". */
   origin: placeSchema,
   destination: placeSchema,
-  departureAt: isoDateTimeSchema,
-  returnAt: isoDateTimeSchema,
+  departureAt: isoDateTimeSchema.optional(),
+  returnAt: isoDateTimeSchema.optional(),
   distanceKm: z.coerce.number().min(0).max(50_000).nullish(),
   notes: z.string().trim().max(2000).optional(),
   commercialValue: moneyInputSchema.nullish(),
@@ -551,7 +558,11 @@ export type CreateTripBody = z.infer<typeof createTripBodySchema>;
 
 export const updateTripBodySchema = createTripBodySchema
   .omit({ requestId: true, acknowledgeDebt: true })
-  .partial();
+  .partial()
+  .extend({
+    /** Só o administrador troca o status direto (o servidor recusa os demais). */
+    status: z.enum(TRIP_STATUSES).optional(),
+  });
 export type UpdateTripBody = z.infer<typeof updateTripBodySchema>;
 
 export const cancelTripBodySchema = z.object({
@@ -638,6 +649,15 @@ export const createFlightRequestBodySchema = z.object({
 });
 export type CreateFlightRequestBody = z.infer<typeof createFlightRequestBodySchema>;
 
+/**
+ * Edição da solicitação pela equipe interna. `convertida` fica de fora: essa
+ * mudança só acontece agendando a viagem, que é o que liga as duas.
+ */
+export const updateFlightRequestBodySchema = createFlightRequestBodySchema.partial().extend({
+  status: z.enum(['aguardando_analise', 'em_analise', 'recusada']).optional(),
+});
+export type UpdateFlightRequestBody = z.infer<typeof updateFlightRequestBodySchema>;
+
 export const rejectRequestBodySchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
@@ -685,14 +705,35 @@ export const chargeSchema = z.object({
 });
 export type Charge = z.infer<typeof chargeSchema>;
 
+/**
+ * Nenhum campo é obrigatório. Sem cliente, vale o da viagem escolhida ou, sem
+ * viagem, o cadastro "Cliente a definir"; sem valor, R$ 0; sem vencimento, hoje.
+ */
 export const createChargeBodySchema = z.object({
-  clientId: idSchema,
+  clientId: idSchema.optional(),
   tripId: idSchema.nullish(),
-  total: moneyInputSchema,
-  dueDate: dateOnlySchema,
+  total: moneyInputSchema.default('0'),
+  dueDate: dateOnlySchema.optional(),
   description: z.string().trim().max(255).optional(),
 });
 export type CreateChargeBody = z.infer<typeof createChargeBodySchema>;
+
+export const updateChargeBodySchema = z.object({
+  clientId: idSchema.optional(),
+  tripId: idSchema.nullish(),
+  total: moneyInputSchema.optional(),
+  dueDate: dateOnlySchema.optional(),
+  description: z.string().trim().max(255).nullish(),
+});
+export type UpdateChargeBody = z.infer<typeof updateChargeBodySchema>;
+
+export const updatePaymentBodySchema = z.object({
+  amount: moneyInputSchema.optional(),
+  paidAt: dateOnlySchema.optional(),
+  method: z.enum(PAYMENT_METHODS).optional(),
+  note: z.string().trim().max(500).nullish(),
+});
+export type UpdatePaymentBody = z.infer<typeof updatePaymentBodySchema>;
 
 export const createPaymentBodySchema = z.object({
   amount: moneyInputSchema,
@@ -861,8 +902,21 @@ export const operationalDashboardSchema = z.object({
 });
 export type OperationalDashboard = z.infer<typeof operationalDashboardSchema>;
 
+/** `?month=AAAA-MM` — mês de referência do painel financeiro. Ausente = mês atual. */
+export const financialDashboardQuerySchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use o formato AAAA-MM')
+    .optional(),
+});
+export type FinancialDashboardQuery = z.infer<typeof financialDashboardQuerySchema>;
+
 export const financialDashboardSchema = z.object({
+  /** Mês de referência dos indicadores mensais (AAAA-MM). */
+  month: z.string(),
   totalReceivable: moneySchema,
+  /** Saldo em aberto das cobranças que vencem no mês de referência. */
+  receivableInMonth: moneySchema,
   receivedThisMonth: moneySchema,
   overdueAmount: moneySchema,
   dueSoonCount: z.number().int(),
@@ -891,6 +945,7 @@ export const financialDashboardSchema = z.object({
       }),
     ),
   }),
+  /** Cobranças em aberto com vencimento no mês de referência. */
   openCharges: z.array(
     z.object({
       id: idSchema,

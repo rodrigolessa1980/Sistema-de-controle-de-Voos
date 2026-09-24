@@ -20,6 +20,7 @@ import {
   reversePaymentBodySchema,
   settleChargeBodySchema,
   settlementStatus,
+  updatePaymentBodySchema,
   type PaymentHistoryItem,
 } from '@acm/shared';
 import type { FastifyInstance } from 'fastify';
@@ -32,7 +33,7 @@ import { badRequest, conflict, notFound } from '../lib/errors';
 import { buildPage, cursorArgs, searchTerm } from '../lib/pagination';
 import { decimalToMoneyStrict, type Prisma, prisma, toDecimal } from '../lib/prisma';
 import { requirePermission, requireUser } from '../plugins/rbac';
-import { chargeSelect, toChargeDTO } from './charge';
+import { chargeSelect, reconcileCharge, toChargeDTO } from './charge';
 
 const utcDate = (d: Date): string => d.toISOString().slice(0, 10);
 
@@ -105,6 +106,106 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
         chargeCode: row.charge.code,
         clientName: row.charge.client.name,
       }));
+    },
+  );
+
+  // --------------------------------------------------------------- editar
+  // Corrige um recebimento já lançado (valor, data, forma, observação). O saldo
+  // e o status da cobrança são recontados do zero em seguida.
+  route.patch(
+    '/:id',
+    {
+      preValidation: requirePermission('payment:update'),
+      schema: {
+        params: idParamSchema,
+        body: updatePaymentBodySchema,
+        response: { 200: chargeSchema },
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = request.params;
+      const body = request.body;
+      const now = new Date();
+
+      const charge = await prisma.$transaction(async (tx) => {
+        const payment = await tx.payment.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            chargeId: true,
+            amount: true,
+            paidAt: true,
+            method: true,
+            reversedAt: true,
+            charge: { select: { total: true, paidAmount: true, clientId: true } },
+          },
+        });
+        if (!payment) throw notFound('Pagamento');
+        if (payment.reversedAt !== null) {
+          throw conflict('Pagamento estornado não pode ser editado.');
+        }
+
+        const amount = body.amount === undefined ? payment.amount : toDecimal(body.amount);
+        if (amount.lessThanOrEqualTo(0)) throw badRequest('O valor deve ser maior que zero.');
+
+        // O que sobra para este pagamento: o total menos os OUTROS pagamentos.
+        const room = payment.charge.total.sub(payment.charge.paidAmount.sub(payment.amount));
+        if (amount.greaterThan(room)) {
+          throw badRequest(
+            `O valor não pode passar de ${decimalToMoneyStrict(room)} (total da cobrança menos os outros pagamentos).`,
+            { amount: 'Acima do saldo da cobrança' },
+          );
+        }
+
+        await tx.payment.update({
+          where: { id },
+          data: {
+            amount,
+            ...(body.paidAt === undefined
+              ? {}
+              : { paidAt: new Date(`${body.paidAt}T00:00:00.000Z`) }),
+            ...(body.method === undefined ? {} : { method: body.method }),
+            ...(body.note === undefined ? {} : { note: body.note }),
+          },
+        });
+
+        await reconcileCharge(tx, payment.chargeId, now);
+        await refreshClientAggregates(tx, payment.charge.clientId, now);
+
+        const clientScopeId = payment.charge.clientId;
+        await recordChanges(
+          tx,
+          [
+            { entity: 'payment', entityId: id, action: 'updated', clientScopeId },
+            { entity: 'charge', entityId: payment.chargeId, action: 'updated', clientScopeId },
+            { entity: 'client', entityId: clientScopeId, action: 'updated', clientScopeId },
+          ],
+          user.id,
+        );
+
+        await tx.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'payment.update',
+            entity: 'payment',
+            entityId: id,
+            before: {
+              amount: decimalToMoneyStrict(payment.amount),
+              paidAt: utcDate(payment.paidAt),
+              method: payment.method,
+            },
+            after: { amount: decimalToMoneyStrict(amount), fields: Object.keys(body) },
+          },
+        });
+
+        return tx.charge.findUniqueOrThrow({
+          where: { id: payment.chargeId },
+          select: chargeSelect,
+        });
+      });
+
+      return toChargeDTO(charge);
     },
   );
 
