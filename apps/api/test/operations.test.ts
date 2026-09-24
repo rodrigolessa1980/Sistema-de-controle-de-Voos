@@ -1156,12 +1156,50 @@ describe('painéis e relatórios', () => {
       },
     });
 
-    const response = await get(op, '/api/dashboard/operacional');
+    // A lista e os contadores mensais seguem o `?month=` — pede o mês do voo.
+    const dep = new Date(j.departureAt);
+    const month = `${String(dep.getFullYear())}-${String(dep.getMonth() + 1).padStart(2, '0')}`;
+
+    const response = await get(op, `/api/dashboard/operacional?month=${month}`);
     const body = response.json();
 
+    expect(body.month).toBe(month);
     expect(body.upcomingTrips).toBe(1);
     expect(body.totalAircraft).toBe(1);
+    expect(body.tripsInMonth).toBe(1);
+    expect(body.confirmedInMonth).toBe(1);
     expect(body.nextTrips).toHaveLength(1);
+  });
+
+  it('o painel operacional filtra pelo mês', async () => {
+    const aircraft = await makeAircraft();
+    const j = futureWindow(30);
+
+    await prisma.trip.create({
+      data: {
+        code: 'VOO-5002',
+        clientId,
+        aircraftId: aircraft.id,
+        origin: 'A',
+        destination: 'B',
+        departureAt: new Date(j.departureAt),
+        returnAt: new Date(j.returnAt),
+        passengers: 1,
+        status: 'confirmada',
+      },
+    });
+
+    // Um mês bem longe do voo: nada no mês, mas os indicadores do "agora" seguem.
+    const response = await get(op, '/api/dashboard/operacional?month=2000-01');
+    const body = response.json();
+
+    expect(body.month).toBe('2000-01');
+    expect(body.tripsInMonth).toBe(0);
+    expect(body.nextTrips).toHaveLength(0);
+    expect(body.upcomingTrips).toBe(1);
+
+    const invalid = await get(op, '/api/dashboard/operacional?month=2026-13');
+    expect(invalid.statusCode).toBe(422);
   });
 
   it('o painel financeiro agrega valores', async () => {
