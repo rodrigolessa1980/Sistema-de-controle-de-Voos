@@ -471,7 +471,7 @@ export function CliSolicitar(): JSX.Element {
                   }}
                 />
               </Field>
-              <Field label="Hora da volta" required help="Horário do retorno.">
+              <Field label="Hora de volta" required help="Horário do retorno.">
                 <Input
                   type="time"
                   value={form.returnTime}

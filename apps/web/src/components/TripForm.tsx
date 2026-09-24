@@ -184,13 +184,14 @@ export function TripForm({
     enabled: open,
   });
 
-  const departureAt = combineDateTime(form.departureDate, form.departureTime);
-  const returnAt = combineDateTime(form.returnDate, form.returnTime);
-  const scheduleFilled =
-    form.departureDate !== '' &&
-    form.departureTime !== '' &&
-    form.returnDate !== '' &&
-    form.returnTime !== '';
+  // Hora é opcional: em branco, a ida vale desde 00:00 e a volta até 23:59.
+  // Assim a aeronave fica reservada o dia inteiro na checagem de conflito.
+  const departureTime = form.departureTime === '' ? '00:00' : form.departureTime;
+  const returnTime = form.returnTime === '' ? '23:59' : form.returnTime;
+
+  const departureAt = combineDateTime(form.departureDate, departureTime);
+  const returnAt = combineDateTime(form.returnDate, returnTime);
+  const scheduleFilled = form.departureDate !== '' && form.returnDate !== '';
   const scheduleValid =
     scheduleFilled && new Date(returnAt).getTime() > new Date(departureAt).getTime();
 
@@ -269,11 +270,11 @@ export function TripForm({
    * `errors`, campo a campo.
    */
   const buildBody = (acknowledgeDebt: boolean): Record<string, unknown> | null => {
-    const departureIso = toIsoDateTime(form.departureDate, form.departureTime);
-    const returnIso = toIsoDateTime(form.returnDate, form.returnTime);
+    const departureIso = toIsoDateTime(form.departureDate, departureTime);
+    const returnIso = toIsoDateTime(form.returnDate, returnTime);
 
     if (departureIso === null || returnIso === null) {
-      setErrors({ departureAt: 'Informe as datas e horários de ida e volta.' });
+      setErrors({ departureAt: 'Informe as datas de ida e volta.' });
       return null;
     }
 
@@ -447,7 +448,7 @@ export function TripForm({
           />
         </Field>
 
-        <Field label="Hora da ida" required help="Horário do embarque.">
+        <Field label="Hora de ida" help="Horário do embarque. Em branco, considera o dia todo.">
           <Input
             type="time"
             value={form.departureTime}
@@ -468,7 +469,7 @@ export function TripForm({
           />
         </Field>
 
-        <Field label="Hora da volta" required help="Horário do retorno.">
+        <Field label="Hora de volta" help="Horário do retorno. Em branco, considera o dia todo.">
           <Input
             type="time"
             value={form.returnTime}
